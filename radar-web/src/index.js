@@ -4,8 +4,10 @@
 // A coleta de precos continua no GitHub Actions, porque o fast-flights depende
 // de bibliotecas nativas que nao rodam em Worker.
 
+import { ehAdmin, entrarAdmin, painelAdmin, sairAdmin, telaLogin } from "./admin.js";
 import {
-  enviarEmail, montarAlerta, montarAvisos, montarBoasVindas, montarPainel, montarRelatorio,
+  assuntoAlerta, assuntoRelatorio, enviarEmail, montarAlerta, montarAvisos,
+  montarBoasVindas, montarPainel, montarRelatorio,
 } from "./email.js";
 import { linksCompra } from "./links.js";
 import { brl, dataBR, esc, pagina, paginaMensagem, respostaHTML } from "./ui.js";
@@ -260,6 +262,74 @@ async function ultimasLeituras(env, id, limite = 10) {
   return (results || []).reverse();  // do mais antigo para o mais novo
 }
 
+// ------------------------------------------------------------- rastreamento
+//
+// Limites que valem saber antes de confiar no numero de aberturas:
+// o Gmail serve as imagens por um proxy proprio e as busca sozinho, o que
+// infla a contagem; e quem bloqueia imagens nunca aparece, o que reduz.
+// Clique e o sinal confiavel: so acontece se alguem clicou de verdade.
+
+const GIF = Uint8Array.from(
+  atob("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"),
+  (c) => c.charCodeAt(0)
+);
+
+// Destinos permitidos no redirecionamento. Sem esta lista a rota /c/ viraria
+// um redirecionador aberto, util para phishing em cima do nosso dominio.
+const DESTINOS_OK = [
+  "www.google.com", "google.com",
+  "www.latamairlines.com", "latamairlines.com",
+  "www.voeazul.com.br", "voeazul.com.br",
+  "www.voegol.com.br", "b2c.voegol.com.br",
+];
+
+async function registrarEnvio(env, { assinaturaId, email, tipo, assunto }) {
+  const id = crypto.randomUUID().replace(/-/g, "").slice(0, 22);
+  await env.DB.prepare(
+    `INSERT INTO envios (id,assinatura_id,email,tipo,assunto,enviado_em)
+     VALUES (?,?,?,?,?,?)`
+  ).bind(id, assinaturaId || null, email, tipo, assunto || null, agoraISO()).run();
+  return id;
+}
+
+function ferramentasRastreio(origem, envioId) {
+  return {
+    pixel: `${origem}/px/${envioId}.gif`,
+    rastrear: (url) => `${origem}/c/${envioId}?u=${encodeURIComponent(url)}`,
+  };
+}
+
+async function pixel(env, id) {
+  await env.DB.prepare(
+    `UPDATE envios SET aberturas = aberturas + 1,
+     aberto_em = COALESCE(aberto_em, ?) WHERE id = ?`
+  ).bind(agoraISO(), id).run();
+  return new Response(GIF, {
+    headers: {
+      "content-type": "image/gif",
+      "cache-control": "no-store, no-cache, must-revalidate, max-age=0",
+    },
+  });
+}
+
+async function clique(env, id, destino) {
+  let alvo;
+  try {
+    alvo = new URL(destino);
+  } catch {
+    return respostaHTML(paginaMensagem("Link invalido", "Nao conseguimos abrir esse endereco."), 400);
+  }
+  if (alvo.protocol !== "https:" || !DESTINOS_OK.includes(alvo.hostname)) {
+    return respostaHTML(paginaMensagem("Link nao permitido",
+      "Este endereco nao faz parte dos destinos do Radar de Passagens."), 400);
+  }
+  await env.DB.prepare(
+    `UPDATE envios SET cliques = cliques + 1,
+     clicado_em = COALESCE(clicado_em, ?) WHERE id = ?`
+  ).bind(agoraISO(), id).run();
+  return Response.redirect(alvo.href, 302);
+}
+
 // -------------------------------------------------------------- desativar
 //
 // Um clique, sem exigir o codigo. Quem recebeu o e-mail e dono do endereco,
@@ -356,7 +426,12 @@ async function enviarPainel(req, env, url) {
     await enviarEmail(env, {
       para: email,
       assunto: `Suas rotas no Radar de Passagens (${assinaturas.length})`,
-      html: montarPainel({ email, assinaturas, origem: url.origin }),
+      html: montarPainel({
+        email, assinaturas, origem: url.origin,
+        ...ferramentasRastreio(url.origin, await registrarEnvio(env, {
+          email, tipo: "painel", assunto: "Suas rotas",
+        })),
+      }),
     });
   } catch (e) {
     console.log("falha ao enviar painel:", e.message);
@@ -399,6 +474,10 @@ async function criarAssinatura(req, env, url) {
       para: d.email,
       assunto: `Monitorando ${d.origem} para ${d.destino}`,
       html: montarBoasVindas({
+        ...ferramentasRastreio(url.origin, await registrarEnvio(env, {
+          assinaturaId: id, email: d.email, tipo: "boas-vindas",
+          assunto: `Monitorando ${d.origem} para ${d.destino}`,
+        })),
         assinatura: { ...d, id },
         urlAssinatura,
         urlPainel: `${url.origin}/painel`,
@@ -555,10 +634,15 @@ async function avaliarAlertas(env, obs, antes, origem) {
     }
 
     try {
+      const assunto = assuntoAlerta(a, melhor, ultimo);
+      const envioId = await registrarEnvio(env, {
+        assinaturaId: a.id, email: a.email, tipo: "alerta", assunto,
+      });
       await enviarEmail(env, {
         para: a.email,
-        assunto: `Caiu: ${a.origem} para ${a.destino} por ${brl(melhor.preco)}`,
+        assunto,
         html: montarAlerta({
+          ...ferramentasRastreio(origem, envioId),
           assinatura: a, atual: melhor, anterior: ultimo, motivos,
           // as outras opcoes da mesma coleta viram a base da comparacao
           // "este tem escala e leva o dobro do tempo do direto"
@@ -618,12 +702,15 @@ async function enviarRelatorios(env, origem) {
       : null;
 
     try {
+      const assunto = assuntoRelatorio(a, atual, antes?.preco ?? null);
+      const envioId = await registrarEnvio(env, {
+        assinaturaId: a.id, email: a.email, tipo: "relatorio", assunto,
+      });
       await enviarEmail(env, {
         para: a.email,
-        assunto: atual
-          ? `${a.origem} para ${a.destino}: ${brl(atual.preco)}`
-          : `${a.origem} para ${a.destino}: sem leitura no periodo`,
+        assunto,
         html: montarRelatorio({
+          ...ferramentasRastreio(origem, envioId),
           assinatura: a,
           atual,
           minimo: resumo?.minimo ?? null,
@@ -674,6 +761,21 @@ export default {
           "Confira o link. Se voce cancelou, os dados foram apagados."), 404);
         return respostaHTML(paginaAssinatura(a, url.href, url.searchParams.has("novo")));
       }
+
+      const px = rota.match(/^\/px\/([a-z0-9]{10,32})\.gif$/i);
+      if (px) return pixel(env, px[1]);
+
+      const cl = rota.match(/^\/c\/([a-z0-9]{10,32})$/i);
+      if (cl) return clique(env, cl[1], url.searchParams.get("u") || "");
+
+      if (rota === "/admin") {
+        if (req.method === "POST") {
+          const senha = String((await req.formData()).get("senha") || "");
+          return entrarAdmin(senha, env, url.protocol === "https:");
+        }
+        return ehAdmin(req, env) ? respostaHTML(await painelAdmin(env, url)) : telaLogin();
+      }
+      if (rota === "/admin/sair" && req.method === "POST") return sairAdmin();
 
       if (rota.startsWith("/api/")) {
         if (!autorizado(req, env)) return json({ erro: "nao autorizado" }, 401);

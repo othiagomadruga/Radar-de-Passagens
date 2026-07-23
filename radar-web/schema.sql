@@ -39,6 +39,23 @@ CREATE TABLE IF NOT EXISTS observacoes (
   FOREIGN KEY (assinatura_id) REFERENCES assinaturas(id) ON DELETE CASCADE
 );
 
+-- Um registro por e-mail disparado, para medir abertura e clique.
+CREATE TABLE IF NOT EXISTS envios (
+  id            TEXT PRIMARY KEY,
+  assinatura_id TEXT,
+  email         TEXT NOT NULL,
+  tipo          TEXT NOT NULL,          -- alerta|relatorio|boas-vindas|painel
+  assunto       TEXT,
+  enviado_em    TEXT NOT NULL,
+  aberto_em     TEXT,
+  aberturas     INTEGER NOT NULL DEFAULT 0,
+  clicado_em    TEXT,
+  cliques       INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_envios_assinatura ON envios (assinatura_id, enviado_em);
+CREATE INDEX IF NOT EXISTS idx_envios_email ON envios (email, enviado_em);
+
 -- consulta quente: melhor preco de uma assinatura num periodo
 CREATE INDEX IF NOT EXISTS idx_obs_assinatura ON observacoes (assinatura_id, coletado_em);
 

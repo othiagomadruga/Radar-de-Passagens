@@ -55,8 +55,22 @@ function cabecalho(titulo, subtitulo) {
 </td></tr>`;
 }
 
-function moldura(conteudo, urlAssinatura, urlPainel, urlDesativar) {
+/** Texto que aparece na previa da notificacao, logo depois do assunto.
+ *
+ *  Sem isto o celular mostra o comeco do HTML, que hoje sai como
+ *  "Radar de Passagens O preco caiu CGH para GYN · 02/12/2026 a ...".
+ *  Quem esta andando com pressa le duas linhas: elas precisam responder
+ *  quanto custa, se e barato e quando e. O espacamento invisivel no fim
+ *  empurra o resto do HTML para fora da previa.
+ */
+const previa = (texto) => `
+<div style="display:none;font-size:1px;color:${FUNDO};line-height:1px;max-height:0;
+  max-width:0;opacity:0;overflow:hidden">${esc(texto)}
+  ${"&#847;&zwnj;&nbsp;".repeat(60)}</div>`;
+
+function moldura(conteudo, urlAssinatura, urlPainel, urlDesativar, extra = {}) {
   return `<!doctype html><html><body style="margin:0;padding:0;background:${FUNDO}">
+${extra.preheader ? previa(extra.preheader) : ""}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${FUNDO};padding:24px 12px">
 <tr><td align="center">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
@@ -80,7 +94,9 @@ function moldura(conteudo, urlAssinatura, urlPainel, urlDesativar) {
       </div>` : ""}
     </td></tr>
   </table>
-</td></tr></table></body></html>`;
+</td></tr></table>
+${extra.pixel ? `<img src="${extra.pixel}" width="1" height="1" alt="" style="display:block;border:0">` : ""}
+</body></html>`;
 }
 
 /** Historico compacto das ultimas leituras. Fica pequeno de proposito: o
@@ -136,11 +152,11 @@ const botao = (url, texto) => `
 
 /** Botao principal na companhia (quando o site dela aceita busca preenchida)
  *  e o Google Flights como comparacao. */
-function botoesCompra(assinatura, voo) {
+function botoesCompra(assinatura, voo, rastrear = (u) => u) {
   const { principal, secundario } = linksCompra(assinatura, voo);
   if (!principal) return "";
-  return botao(principal.url, principal.rotulo) + (secundario
-    ? `<div style="margin-top:11px"><a href="${esc(secundario.url)}"
+  return botao(rastrear(principal.url), principal.rotulo) + (secundario
+    ? `<div style="margin-top:11px"><a href="${esc(rastrear(secundario.url))}"
         style="color:${AZUL};text-decoration:none;font:400 13px/1
         -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${esc(secundario.rotulo)}</a></div>`
     : "");
@@ -233,11 +249,57 @@ export function montarAvisos(escolhido, alternativas = []) {
   return avisos;
 }
 
+// ------------------------------------------------- assunto e previa
+//
+// A tela de bloqueio corta o assunto por volta de 40 caracteres e mostra duas
+// linhas de previa. A ordem do que entra ai nao e estetica, e decisao: quanto
+// custa, se esta barato, e para quando. O resto pode esperar a pessoa abrir.
+
+const curtaData = (iso) => dataBR(iso).slice(0, 5);
+
+export function assuntoAlerta(a, atual, anterior) {
+  const pct = anterior && anterior > 0 ? Math.round(((anterior - atual.preco) / anterior) * 100) : 0;
+  const queda = pct > 0 ? ` (-${pct}%)` : "";
+  return `${brl(atual.preco)} ${a.origem}-${a.destino} ${curtaData(a.ida)}${queda}`;
+}
+
+export function previaAlerta(a, atual, motivos = []) {
+  const partes = [];
+  partes.push(a.volta ? "ida e volta" : "somente ida");
+  if (atual.partida) {
+    partes.push(`sai ${atual.partida}${atual.paradas ? `, ${atual.paradas} parada` : ", direto"}`);
+  }
+  const dur = duracaoTexto(atual.duracao_min);
+  if (dur) partes.push(dur);
+  if (atual.cia) partes.push(atual.cia);
+  // o motivo mais forte primeiro: e ele que diz se vale parar o que esta fazendo
+  const razao = motivos.find((m) => m.includes("menor preco")) || motivos[0];
+  return `${partes.join(" · ")}${razao ? ` · ${razao}` : ""}`;
+}
+
+export function assuntoRelatorio(a, atual, anterior) {
+  if (!atual) return `${a.origem}-${a.destino} ${curtaData(a.ida)}: sem leitura`;
+  const pct = anterior && anterior > 0 ? Math.round(((anterior - atual.preco) / anterior) * 100) : 0;
+  const sinal = pct >= 1 ? ` (-${pct}%)` : pct <= -1 ? ` (+${Math.abs(pct)}%)` : "";
+  return `${brl(atual.preco)} ${a.origem}-${a.destino} ${curtaData(a.ida)}${sinal}`;
+}
+
+export function previaRelatorio(a, atual, minimo) {
+  if (!atual) return "Nenhum preco coletado neste periodo.";
+  const partes = [a.volta ? "ida e volta" : "somente ida"];
+  if (atual.partida) partes.push(`sai ${atual.partida}${atual.paradas ? "" : ", direto"}`);
+  if (atual.cia) partes.push(atual.cia);
+  if (minimo != null && minimo < atual.preco) partes.push(`menor do periodo ${brl(minimo)}`);
+  else if (minimo != null) partes.push("este e o menor do periodo");
+  return partes.join(" · ");
+}
+
 // ------------------------------------------------------------------ e-mails
 
 /** Alerta imediato: o preco caiu agora, nao espera o relatorio. */
 export function montarAlerta({ assinatura, atual, anterior, motivos, avisos = [],
-                               leituras = [], urlAssinatura, urlPainel, urlDesativar }) {
+                               leituras = [], urlAssinatura, urlPainel, urlDesativar,
+                               pixel = null, rastrear = (u) => u }) {
   const pct = anterior && anterior > 0 ? ((anterior - atual.preco) / anterior) * 100 : null;
   const datas = `${dataBR(assinatura.ida)}${assinatura.volta ? " a " + dataBR(assinatura.volta) : ""}`;
 
@@ -252,7 +314,7 @@ export function montarAlerta({ assinatura, atual, anterior, motivos, avisos = []
          ${pct && pct > 0 ? `queda de ${pct.toFixed(0)}%` : "novo preco"} · antes ${brl(anterior)}</span></div>` : ""}
        ${selo(assinatura, atual, atual.coletado_em)}
        ${linhaVoo(atual)}
-       ${botoesCompra(assinatura, atual)}
+       ${botoesCompra(assinatura, atual, rastrear)}
        ${notaTrecho(assinatura, atual)}
      `)}
      ${historico(leituras)}
@@ -268,13 +330,15 @@ export function montarAlerta({ assinatura, atual, anterior, motivos, avisos = []
          color:${SUAVE};margin:16px 0 22px">Promocao de passagem costuma durar pouco.
          Se fizer sentido, vale conferir agora.</div>
      </td></tr>`,
-    urlAssinatura, urlPainel, urlDesativar
+    urlAssinatura, urlPainel, urlDesativar,
+    { preheader: previaAlerta(assinatura, atual, motivos), pixel }
   );
 }
 
 /** Relatorio periodico: o panorama, tenha caido ou nao. */
 export function montarRelatorio({ assinatura, atual, minimo, anterior, amostras, avisos = [],
-                                  leituras = [], urlAssinatura, urlPainel, urlDesativar }) {
+                                  leituras = [], urlAssinatura, urlPainel, urlDesativar,
+                                  pixel = null, rastrear = (u) => u }) {
   const datas = `${dataBR(assinatura.ida)}${assinatura.volta ? " a " + dataBR(assinatura.volta) : ""}`;
   const titulo = `${esc(assinatura.origem)} para ${esc(assinatura.destino)}`;
 
@@ -286,7 +350,8 @@ export function montarRelatorio({ assinatura, atual, minimo, anterior, amostras,
          Ainda nao temos preco coletado para esta rota neste periodo. Se isso se repetir no
          proximo relatorio, provavelmente nao ha voos disponiveis para as datas escolhidas.
        </td></tr>`,
-      urlAssinatura, urlPainel, urlDesativar
+      urlAssinatura, urlPainel, urlDesativar,
+      { preheader: previaRelatorio(assinatura, null), pixel }
     );
   }
 
@@ -320,7 +385,7 @@ export function montarRelatorio({ assinatura, atual, minimo, anterior, amostras,
        ${variacao}
        ${selo(assinatura, atual, atual.coletado_em)}
        ${linhaVoo(atual)}
-       ${botoesCompra(assinatura, atual)}
+       ${botoesCompra(assinatura, atual, rastrear)}
        ${notaTrecho(assinatura, atual)}
      `)}
      ${historico(leituras)}
@@ -331,12 +396,14 @@ export function montarRelatorio({ assinatura, atual, minimo, anterior, amostras,
        ${avisos.map(aviso).join("")}
        ${teto}
      </td></tr>`,
-    urlAssinatura, urlPainel, urlDesativar
+    urlAssinatura, urlPainel, urlDesativar,
+    { preheader: previaRelatorio(assinatura, atual, minimo), pixel }
   );
 }
 
 /** Boas-vindas: unico lugar onde o codigo de edicao e entregue. */
-export function montarBoasVindas({ assinatura, urlAssinatura, urlPainel, periodicidadeTexto }) {
+export function montarBoasVindas({ assinatura, urlAssinatura, urlPainel, periodicidadeTexto,
+                                   pixel = null, rastrear = (u) => u }) {
   const datas = `${dataBR(assinatura.ida)}${assinatura.volta ? " a " + dataBR(assinatura.volta) : ""}`;
   return moldura(
     `${cabecalho("Monitoramento ativo",
@@ -361,12 +428,13 @@ export function montarBoasVindas({ assinatura, urlAssinatura, urlPainel, periodi
        -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${SUAVE}">
        Quem tiver este link consegue alterar a assinatura, entao evite compartilha-lo.
      </td></tr>`,
-    urlAssinatura, urlPainel
+    urlAssinatura, urlPainel, null,
+    { preheader: `Acompanhamos ${assinatura.origem} para ${assinatura.destino} varias vezes por dia. Codigo ${assinatura.id}.`, pixel }
   );
 }
 
 /** Painel: todas as rotas daquele e-mail. Substitui login e senha. */
-export function montarPainel({ email, assinaturas, origem }) {
+export function montarPainel({ email, assinaturas, origem, pixel = null }) {
   const itens = assinaturas
     .map((a) => {
       const datas = `${dataBR(a.ida)}${a.volta ? " a " + dataBR(a.volta) : ""}`;
@@ -392,6 +460,7 @@ export function montarPainel({ email, assinaturas, origem }) {
        -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${SUAVE}">
        Nao usamos senha. Sempre que precisar dos seus links, peca este e-mail de novo no site.
      </td></tr>`,
-    `${origem}/`, null
+    `${origem}/`, null, null,
+    { preheader: `${assinaturas.length} rota(s) monitorada(s) neste e-mail.`, pixel }
   );
 }
