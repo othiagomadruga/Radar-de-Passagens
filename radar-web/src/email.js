@@ -1,6 +1,20 @@
-// Envio de e-mail pelo Brevo e montagem do relatorio periodico.
+// Envio pelo Brevo e montagem dos e-mails.
+//
+// HTML de e-mail nao e HTML de site: Outlook e Gmail ignoram flex, grid e
+// boa parte do CSS moderno. Por isso tudo aqui e tabela com estilo inline.
 
 import { brl, dataBR, esc } from "./ui.js";
+
+const AZUL = "#1f6feb";
+const AZUL_ESCURO = "#12459b";
+const TINTA = "#16191d";
+const SUAVE = "#606a75";
+const BORDA = "#e3e6ea";
+const FUNDO = "#f4f6f8";
+const VERDE = "#127a4b";
+const VERDE_FUNDO = "#e7f5ee";
+const AMBAR = "#8a5a00";
+const AMBAR_FUNDO = "#fdf6e3";
 
 export async function enviarEmail(env, { para, assunto, html }) {
   const resp = await fetch("https://api.brevo.com/v3/smtp/email", {
@@ -24,32 +38,163 @@ export async function enviarEmail(env, { para, assunto, html }) {
   return true;
 }
 
-const ESTILO_EMAIL = `
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
-  color:#16191d;line-height:1.55;max-width:560px;margin:0 auto;padding:8px`;
+// ------------------------------------------------------------------- pecas
 
-function moldura(conteudo, urlAssinatura) {
-  return `<div style="${ESTILO_EMAIL}">
-${conteudo}
-<div style="margin-top:32px;padding-top:16px;border-top:1px solid #e3e6ea;font-size:13px;color:#606a75">
-  <a href="${urlAssinatura}" style="color:#1f6feb">Editar, pausar ou cancelar esta assinatura</a><br>
-  Voce recebe este e-mail porque cadastrou esta rota no Radar de Passagens.
-</div></div>`;
+/** Faixa superior com a marca. O avião é texto, não imagem: imagem em e-mail
+ *  costuma vir bloqueada por padrão e a arte apareceria quebrada. */
+function cabecalho(titulo, subtitulo) {
+  return `
+<tr><td style="background-color:${AZUL};background-image:linear-gradient(135deg,${AZUL} 0%,${AZUL_ESCURO} 100%);padding:26px 28px">
+  <div style="font:600 13px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+    color:#bcd4ff;letter-spacing:.14em;text-transform:uppercase">Radar de Passagens</div>
+  <div style="font:700 23px/1.3 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+    color:#ffffff;margin-top:10px">${titulo}</div>
+  ${subtitulo ? `<div style="font:400 15px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+    color:#d6e4ff;margin-top:5px">${subtitulo}</div>` : ""}
+</td></tr>`;
 }
 
-/** Relatorio periodico: panorama do periodo, tenha caido ou nao. */
-export function montarRelatorio({ assinatura, atual, minimo, anterior, amostras, urlAssinatura }) {
-  const trecho = `${esc(assinatura.origem)} para ${esc(assinatura.destino)}`;
+function moldura(conteudo, urlAssinatura, urlPainel) {
+  return `<!doctype html><html><body style="margin:0;padding:0;background:${FUNDO}">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${FUNDO};padding:24px 12px">
+<tr><td align="center">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+    style="max-width:560px;background:#ffffff;border-radius:14px;overflow:hidden;
+    border:1px solid ${BORDA};font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">
+    ${conteudo}
+    <tr><td style="padding:20px 28px 26px;border-top:1px solid ${BORDA}">
+      <div style="font:400 13px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${SUAVE}">
+        <a href="${urlAssinatura}" style="color:${AZUL};text-decoration:none">Editar, pausar ou cancelar</a>
+        ${urlPainel ? ` &nbsp;·&nbsp; <a href="${urlPainel}" style="color:${AZUL};text-decoration:none">Ver todas as minhas rotas</a>` : ""}
+        <br>Voce recebe este e-mail porque cadastrou esta rota no Radar de Passagens.
+      </div>
+    </td></tr>
+  </table>
+</td></tr></table></body></html>`;
+}
+
+const cartaoPreco = (dentro) => `
+<tr><td style="padding:26px 28px 6px">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+    style="background:${FUNDO};border:1px solid ${BORDA};border-radius:11px">
+    <tr><td style="padding:20px 22px">${dentro}</td></tr>
+  </table>
+</td></tr>`;
+
+const botao = (url, texto) => `
+<div style="margin-top:18px"><a href="${esc(url)}"
+  style="display:inline-block;background:${AZUL};color:#ffffff;text-decoration:none;
+  padding:12px 26px;border-radius:8px;font-weight:600;font-size:15px">${texto}</a></div>`;
+
+const aviso = (texto) => `
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+  style="background:${AMBAR_FUNDO};border-left:3px solid ${AMBAR};border-radius:6px;margin-top:12px">
+  <tr><td style="padding:11px 14px;font:400 13px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${AMBAR}">
+    ${texto}</td></tr></table>`;
+
+const duracaoTexto = (min) => {
+  if (!min) return null;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return h ? `${h}h${String(m).padStart(2, "0")}` : `${m}min`;
+};
+
+/** Linha do voo: horario, duracao, paradas. Sem isso o preco sozinho engana. */
+function linhaVoo(v) {
+  if (!v) return "";
+  const partes = [];
+  if (v.partida && v.chegada) {
+    partes.push(`<strong style="color:${TINTA}">${esc(v.partida)}</strong> ate
+      <strong style="color:${TINTA}">${esc(v.chegada)}</strong>${v.chega_outro_dia ? " do dia seguinte" : ""}`);
+  }
+  const dur = duracaoTexto(v.duracao_min);
+  if (dur) partes.push(dur);
+  partes.push(v.paradas ? `${v.paradas} parada${v.paradas > 1 ? "s" : ""}` : "direto");
+  if (v.cia) partes.push(esc(v.cia));
+  return `<div style="font:400 14px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+    color:${SUAVE};margin-top:10px">${partes.join(" &nbsp;·&nbsp; ")}</div>`;
+}
+
+/** As armadilhas que o preco esconde. Regras vindas de casos reais:
+ *  escala que dobra o tempo de viagem, e pouso no dia seguinte. */
+export function montarAvisos(escolhido, alternativas = []) {
+  const avisos = [];
+  if (!escolhido) return avisos;
+
+  if (escolhido.chega_outro_dia) {
+    avisos.push("Atencao: este voo pousa no dia seguinte ao da partida.");
+  }
+
+  const diretos = alternativas.filter((a) => !a.paradas && a.duracao_min);
+  const melhorDireto = diretos.length
+    ? diretos.reduce((a, b) => (b.duracao_min < a.duracao_min ? b : a))
+    : null;
+
+  if (escolhido.paradas && escolhido.duracao_min && melhorDireto) {
+    const extra = escolhido.duracao_min - melhorDireto.duracao_min;
+    if (extra >= 90) {
+      const dif = melhorDireto.preco - escolhido.preco;
+      avisos.push(
+        `Este voo tem escala e leva ${duracaoTexto(escolhido.duracao_min)}, ` +
+        `contra ${duracaoTexto(melhorDireto.duracao_min)} do direto. ` +
+        (dif > 0
+          ? `O direto sai por ${brl(melhorDireto.preco)}, ${brl(dif)} a mais.`
+          : `O direto custa o mesmo ou menos, entao vale conferir.`)
+      );
+    }
+  }
+  return avisos;
+}
+
+// ------------------------------------------------------------------ e-mails
+
+/** Alerta imediato: o preco caiu agora, nao espera o relatorio. */
+export function montarAlerta({ assinatura, atual, anterior, motivos, avisos = [], urlAssinatura, urlPainel }) {
+  const pct = anterior && anterior > 0 ? ((anterior - atual.preco) / anterior) * 100 : null;
   const datas = `${dataBR(assinatura.ida)}${assinatura.volta ? " a " + dataBR(assinatura.volta) : ""}`;
+
+  return moldura(
+    `${cabecalho("O preco caiu", `${esc(assinatura.origem)} para ${esc(assinatura.destino)} · ${datas}`)}
+     ${cartaoPreco(`
+       <div style="font:700 34px/1.1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${TINTA}">
+         ${brl(atual.preco)}</div>
+       ${anterior ? `<div style="margin-top:9px">
+         <span style="display:inline-block;background:${VERDE_FUNDO};color:${VERDE};font:600 13px/1
+         -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;padding:6px 11px;border-radius:20px">
+         ${pct && pct > 0 ? `queda de ${pct.toFixed(0)}%` : "novo preco"} · antes ${brl(anterior)}</span></div>` : ""}
+       ${linhaVoo(atual)}
+       ${atual.link ? botao(atual.link, "Ver e comprar") : ""}
+     `)}
+     <tr><td style="padding:14px 28px 0">
+       <div style="font:600 12px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+         color:${SUAVE};letter-spacing:.09em;text-transform:uppercase">Por que voce esta recebendo</div>
+       <ul style="margin:10px 0 0;padding-left:19px;font:400 14px/1.65
+         -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${TINTA}">
+         ${motivos.map((m) => `<li>${esc(m)}</li>`).join("")}
+       </ul>
+       ${avisos.map(aviso).join("")}
+       <div style="font:400 13px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+         color:${SUAVE};margin:16px 0 22px">Promocao de passagem costuma durar pouco.
+         Se fizer sentido, vale conferir agora.</div>
+     </td></tr>`,
+    urlAssinatura, urlPainel
+  );
+}
+
+/** Relatorio periodico: o panorama, tenha caido ou nao. */
+export function montarRelatorio({ assinatura, atual, minimo, anterior, amostras, avisos = [], urlAssinatura, urlPainel }) {
+  const datas = `${dataBR(assinatura.ida)}${assinatura.volta ? " a " + dataBR(assinatura.volta) : ""}`;
+  const titulo = `${esc(assinatura.origem)} para ${esc(assinatura.destino)}`;
 
   if (!atual) {
     return moldura(
-      `<h2 style="font-size:19px;margin:0 0 6px">${trecho}</h2>
-       <p style="color:#606a75;margin:0 0 18px">${datas}</p>
-       <p>Ainda nao temos preco coletado para esta rota neste periodo.
-       Se isso se repetir no proximo relatorio, provavelmente a rota nao tem voos
-       disponiveis para as datas escolhidas.</p>`,
-      urlAssinatura
+      `${cabecalho(titulo, datas)}
+       <tr><td style="padding:26px 28px 30px;font:400 15px/1.6
+         -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${TINTA}">
+         Ainda nao temos preco coletado para esta rota neste periodo. Se isso se repetir no
+         proximo relatorio, provavelmente nao ha voos disponiveis para as datas escolhidas.
+       </td></tr>`,
+      urlAssinatura, urlPainel
     );
   }
 
@@ -58,82 +203,100 @@ export function montarRelatorio({ assinatura, atual, minimo, anterior, amostras,
     const pct = ((anterior - atual.preco) / anterior) * 100;
     if (Math.abs(pct) >= 1) {
       const caiu = pct > 0;
-      variacao = `<p style="margin:0 0 4px">
-        <span style="display:inline-block;font-size:13px;font-weight:600;padding:3px 9px;border-radius:20px;
-        background:${caiu ? "#e7f5ee" : "#fdf0e8"};color:${caiu ? "#127a4b" : "#9a3412"}">
-        ${caiu ? "caiu" : "subiu"} ${Math.abs(pct).toFixed(0)}% desde o ultimo relatorio</span></p>`;
+      variacao = `<div style="margin-top:9px">
+        <span style="display:inline-block;background:${caiu ? VERDE_FUNDO : AMBAR_FUNDO};
+        color:${caiu ? VERDE : AMBAR};font:600 13px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+        padding:6px 11px;border-radius:20px">${caiu ? "caiu" : "subiu"} ${Math.abs(pct).toFixed(0)}%
+        desde o ultimo relatorio</span></div>`;
     }
   }
 
-  const abaixoDoTeto =
+  const teto =
     assinatura.teto && atual.preco <= assinatura.teto
-      ? `<p style="margin:14px 0 0;padding:11px 14px;background:#e7f5ee;border-radius:8px;color:#127a4b;font-weight:600">
-         Esta abaixo do seu teto de ${brl(assinatura.teto)}.</p>`
+      ? `<div style="margin-top:14px;padding:12px 15px;background:${VERDE_FUNDO};border-radius:8px;
+         font:600 14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${VERDE}">
+         Esta abaixo do seu teto de ${brl(assinatura.teto)}.</div>`
       : "";
 
   return moldura(
-    `<h2 style="font-size:19px;margin:0 0 6px">${trecho}</h2>
-     <p style="color:#606a75;margin:0 0 20px">${datas}</p>
-     <div style="background:#f7f8fa;border:1px solid #e3e6ea;border-radius:10px;padding:18px 20px">
-       <div style="font-size:13px;color:#606a75">melhor preco agora</div>
-       <div style="font-size:30px;font-weight:680;margin:2px 0 8px">${brl(atual.preco)}</div>
+    `${cabecalho(titulo, datas)}
+     ${cartaoPreco(`
+       <div style="font:400 13px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${SUAVE}">
+         melhor preco agora</div>
+       <div style="font:700 34px/1.1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+         color:${TINTA};margin-top:4px">${brl(atual.preco)}</div>
        ${variacao}
-       <div style="font-size:13px;color:#606a75;margin-top:8px">
-         ${esc(atual.cia || "")} · ${atual.paradas ?? 0} parada(s)<br>
-         menor preco do periodo: ${brl(minimo)} · ${amostras} leitura(s)
-       </div>
-       ${atual.link ? `<p style="margin:16px 0 0"><a href="${esc(atual.link)}"
-         style="display:inline-block;background:#1f6feb;color:#fff;text-decoration:none;
-         padding:10px 18px;border-radius:8px;font-weight:600">Ver e comprar</a></p>` : ""}
-     </div>
-     ${abaixoDoTeto}`,
-    urlAssinatura
+       ${linhaVoo(atual)}
+       ${atual.link ? botao(atual.link, "Ver e comprar") : ""}
+     `)}
+     <tr><td style="padding:12px 28px 26px">
+       <div style="font:400 13px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${SUAVE}">
+         menor preco do periodo: <strong style="color:${TINTA}">${brl(minimo)}</strong>
+         &nbsp;·&nbsp; ${amostras} leitura${amostras === 1 ? "" : "s"}</div>
+       ${avisos.map(aviso).join("")}
+       ${teto}
+     </td></tr>`,
+    urlAssinatura, urlPainel
   );
 }
 
-/** Alerta imediato: o preco caiu agora, nao espera o relatorio. */
-export function montarAlerta({ assinatura, atual, anterior, motivos, urlAssinatura }) {
-  const trecho = `${esc(assinatura.origem)} para ${esc(assinatura.destino)}`;
-  const pct = anterior && anterior > 0 ? ((anterior - atual.preco) / anterior) * 100 : null;
+/** Boas-vindas: unico lugar onde o codigo de edicao e entregue. */
+export function montarBoasVindas({ assinatura, urlAssinatura, urlPainel, periodicidadeTexto }) {
+  const datas = `${dataBR(assinatura.ida)}${assinatura.volta ? " a " + dataBR(assinatura.volta) : ""}`;
   return moldura(
-    `<h2 style="font-size:19px;margin:0 0 6px">O preco caiu</h2>
-     <p style="margin:0 0 20px;color:#606a75">${trecho}, ${dataBR(assinatura.ida)}${
-      assinatura.volta ? " a " + dataBR(assinatura.volta) : ""
-    }</p>
-     <div style="background:#f7f8fa;border:1px solid #e3e6ea;border-radius:10px;padding:18px 20px">
-       <div style="font-size:30px;font-weight:680;margin:0 0 6px">${brl(atual.preco)}</div>
-       ${anterior ? `<div style="font-size:14px;color:#606a75;margin-bottom:10px">
-         antes ${brl(anterior)}${pct && pct > 0 ? `, queda de ${pct.toFixed(0)}%` : ""}</div>` : ""}
-       <ul style="margin:12px 0 0;padding-left:18px;font-size:14px;color:#16191d">
-         ${motivos.map((m) => `<li>${esc(m)}</li>`).join("")}
-       </ul>
-       <div style="font-size:13px;color:#606a75;margin-top:12px">
-         ${esc(atual.cia || "")} · ${atual.paradas ?? 0} parada(s)</div>
-       ${atual.link ? `<p style="margin:16px 0 0"><a href="${esc(atual.link)}"
-         style="display:inline-block;background:#1f6feb;color:#fff;text-decoration:none;
-         padding:10px 18px;border-radius:8px;font-weight:600">Ver e comprar</a></p>` : ""}
-     </div>
-     <p style="font-size:13px;color:#606a75;margin-top:16px">
-       Promocao de passagem costuma durar pouco. Se fizer sentido, vale conferir agora.</p>`,
-    urlAssinatura
+    `${cabecalho("Monitoramento ativo",
+       `${esc(assinatura.origem)} para ${esc(assinatura.destino)} · ${datas}`)}
+     <tr><td style="padding:26px 28px 8px;font:400 15px/1.65
+       -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${TINTA}">
+       A partir de agora acompanhamos o preco desta rota varias vezes por dia.
+       Voce recebe um relatorio <strong>${esc(periodicidadeTexto)}</strong>, e se o preco
+       despencar avisamos na hora, sem esperar.
+     </td></tr>
+     ${cartaoPreco(`
+       <div style="font:400 13px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${SUAVE}">
+         seu codigo de acesso</div>
+       <div style="font:700 24px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+         color:${TINTA};letter-spacing:.07em;margin-top:6px">${esc(assinatura.id)}</div>
+       <div style="font:400 13px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+         color:${SUAVE};margin-top:10px">Guarde este e-mail. E por ele que voce edita as datas,
+         muda a frequencia, pausa ou cancela.</div>
+       ${botao(urlAssinatura, "Abrir minha assinatura")}
+     `)}
+     <tr><td style="padding:14px 28px 26px;font:400 13px/1.55
+       -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${SUAVE}">
+       Quem tiver este link consegue alterar a assinatura, entao evite compartilha-lo.
+     </td></tr>`,
+    urlAssinatura, urlPainel
   );
 }
 
-/** E-mail de boas-vindas: o unico lugar onde o codigo de edicao e entregue. */
-export function montarBoasVindas({ assinatura, urlAssinatura, periodicidadeTexto }) {
-  const trecho = `${esc(assinatura.origem)} para ${esc(assinatura.destino)}`;
+/** Painel: todas as rotas daquele e-mail. Substitui login e senha. */
+export function montarPainel({ email, assinaturas, origem }) {
+  const itens = assinaturas
+    .map((a) => {
+      const datas = `${dataBR(a.ida)}${a.volta ? " a " + dataBR(a.volta) : ""}`;
+      const preco = a.ultimo_preco != null ? brl(a.ultimo_preco) : "sem leitura ainda";
+      return `<tr><td style="padding:14px 0;border-bottom:1px solid ${BORDA}">
+        <div style="font:600 16px/1.3 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${TINTA}">
+          ${esc(a.origem)} para ${esc(a.destino)}</div>
+        <div style="font:400 13px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+          color:${SUAVE};margin-top:3px">${datas} · ${a.ativa ? "monitorando" : "pausada"} · ${preco}</div>
+        <div style="margin-top:7px"><a href="${origem}/a/${esc(a.id)}"
+          style="color:${AZUL};text-decoration:none;font:600 14px/1
+          -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">Abrir e editar</a></div>
+      </td></tr>`;
+    })
+    .join("");
+
   return moldura(
-    `<h2 style="font-size:19px;margin:0 0 6px">Monitoramento ativo</h2>
-     <p style="margin:0 0 18px;color:#606a75">${trecho}, ${dataBR(assinatura.ida)}${
-      assinatura.volta ? " a " + dataBR(assinatura.volta) : ""
-    }</p>
-     <p>A partir de agora acompanhamos o preco desta rota varias vezes por dia.
-     Voce recebe um relatorio <strong>${esc(periodicidadeTexto)}</strong>.</p>
-     <p style="margin-top:18px">Guarde este link. E por ele que voce edita as datas,
-     muda a frequencia, pausa ou cancela:</p>
-     <p><a href="${urlAssinatura}" style="color:#1f6feb;word-break:break-all">${urlAssinatura}</a></p>
-     <p style="font-size:13px;color:#606a75">Quem tiver este link consegue alterar a assinatura,
-     entao evite compartilha-lo.</p>`,
-    urlAssinatura
+    `${cabecalho("Suas rotas", email)}
+     <tr><td style="padding:20px 28px 8px">
+       <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${itens}</table>
+     </td></tr>
+     <tr><td style="padding:14px 28px 26px;font:400 13px/1.55
+       -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${SUAVE}">
+       Nao usamos senha. Sempre que precisar dos seus links, peca este e-mail de novo no site.
+     </td></tr>`,
+    `${origem}/`, null
   );
 }

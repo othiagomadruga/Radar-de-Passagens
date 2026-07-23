@@ -4,7 +4,9 @@
 // A coleta de precos continua no GitHub Actions, porque o fast-flights depende
 // de bibliotecas nativas que nao rodam em Worker.
 
-import { enviarEmail, montarAlerta, montarBoasVindas, montarRelatorio } from "./email.js";
+import {
+  enviarEmail, montarAlerta, montarAvisos, montarBoasVindas, montarPainel, montarRelatorio,
+} from "./email.js";
 import { brl, dataBR, esc, pagina, paginaMensagem, respostaHTML } from "./ui.js";
 
 const PERIODICIDADES = {
@@ -133,7 +135,8 @@ function paginaInicial(erros = [], d = {}) {
          <input id="convite" name="convite" required placeholder="informe o codigo que voce recebeu">
          <div class="dica">O cadastro e restrito a quem recebeu o codigo.</div></div>
        <button type="submit">Comecar a monitorar</button>
-     </form>`
+     </form>
+     <p style="margin-top:26px"><a href="/painel">Ja tenho cadastro, quero meus links</a></p>`
   );
 }
 
@@ -184,6 +187,64 @@ function paginaAssinatura(a, url, novo = false, salvo = false) {
   );
 }
 
+// ------------------------------------------------------------------- painel
+//
+// Substitui login e senha. Quem controla a caixa de e-mail recebe os proprios
+// links, que e exatamente o que uma senha tentaria provar, sem guardar senha.
+
+function paginaPainel(mensagem = "", erro = "") {
+  return pagina(
+    "Minhas rotas",
+    `<h1>Ver minhas rotas</h1>
+     <p class="sub">Nao usamos senha. Informe o e-mail do cadastro e enviamos
+     os links de todas as suas rotas.</p>
+     ${erro ? `<div class="erro" style="margin-top:20px">${esc(erro)}</div>` : ""}
+     ${mensagem ? `<div class="cartao" style="border-color:var(--ok);margin-top:20px">
+       ${esc(mensagem)}</div>` : ""}
+     <form method="post" action="/painel">
+       <div class="campo" style="margin-top:22px"><label for="email">Seu e-mail</label>
+         <input id="email" name="email" type="email" required placeholder="voce@exemplo.com"></div>
+       <button type="submit">Receber meus links</button>
+     </form>
+     <p style="margin-top:26px"><a href="/">Cadastrar uma rota nova</a></p>`
+  );
+}
+
+async function enviarPainel(req, env, url) {
+  const fd = await req.formData();
+  const email = String(fd.get("email") || "").trim().toLowerCase();
+  if (!RE_EMAIL.test(email)) return respostaHTML(paginaPainel("", "E-mail invalido."), 400);
+
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM assinaturas WHERE email = ? ORDER BY ida"
+  ).bind(email).all();
+
+  // Resposta identica com ou sem cadastro: senao a pagina vira um verificador
+  // de quais e-mails estao na base.
+  const confirmacao = "Se este e-mail tiver rotas cadastradas, a lista chega em instantes.";
+  if (!results?.length) return respostaHTML(paginaPainel(confirmacao));
+
+  const assinaturas = [];
+  for (const a of results) {
+    const ult = await env.DB.prepare(
+      `SELECT preco FROM observacoes WHERE assinatura_id = ?
+       ORDER BY coletado_em DESC, preco ASC LIMIT 1`
+    ).bind(a.id).first();
+    assinaturas.push({ ...a, ativa: !!a.ativa, ultimo_preco: ult?.preco ?? null });
+  }
+
+  try {
+    await enviarEmail(env, {
+      para: email,
+      assunto: `Suas rotas no Radar de Passagens (${assinaturas.length})`,
+      html: montarPainel({ email, assinaturas, origem: url.origin }),
+    });
+  } catch (e) {
+    console.log("falha ao enviar painel:", e.message);
+  }
+  return respostaHTML(paginaPainel(confirmacao));
+}
+
 // -------------------------------------------------------------- handlers web
 
 async function criarAssinatura(req, env, url) {
@@ -221,6 +282,7 @@ async function criarAssinatura(req, env, url) {
       html: montarBoasVindas({
         assinatura: { ...d, id },
         urlAssinatura,
+        urlPainel: `${url.origin}/painel`,
         periodicidadeTexto: PERIODICIDADES[d.periodicidade].texto,
       }),
     });
@@ -236,7 +298,8 @@ async function carregarAssinatura(env, id) {
   const a = await env.DB.prepare("SELECT * FROM assinaturas WHERE id = ?").bind(id).first();
   if (!a) return null;
   const ult = await env.DB.prepare(
-    `SELECT preco, cia, link FROM observacoes WHERE assinatura_id = ?
+    `SELECT preco, cia, link, partida, chegada, duracao_min, chega_outro_dia
+     FROM observacoes WHERE assinatura_id = ?
      ORDER BY coletado_em DESC, preco ASC LIMIT 1`
   ).bind(id).first();
   const agg = await env.DB.prepare(
@@ -248,6 +311,7 @@ async function carregarAssinatura(env, id) {
     ultimo_preco: ult?.preco ?? null,
     ultima_cia: ult?.cia ?? null,
     ultimo_link: ult?.link ?? null,
+    ultimo_voo: ult || null,
     minimo: agg?.minimo ?? null,
     amostras: agg?.n ?? 0,
   };
@@ -303,8 +367,9 @@ async function receberObservacoes(req, env) {
 
   const stmt = env.DB.prepare(
     `INSERT INTO observacoes
-     (assinatura_id,preco,moeda,cia,paradas,ida,volta,link,fonte,coletado_em)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`
+     (assinatura_id,preco,moeda,cia,paradas,ida,volta,link,
+      partida,chegada,duracao_min,chega_outro_dia,fonte,coletado_em)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   );
   // Estado ANTES de gravar: e com ele que se sabe se o preco caiu.
   const alvos = [...new Set(obs.map((o) => o.assinatura_id))];
@@ -323,7 +388,9 @@ async function receberObservacoes(req, env) {
   await env.DB.batch(
     obs.map((o) => stmt.bind(
       o.assinatura_id, o.preco, o.moeda || "BRL", o.cia || null, o.paradas ?? null,
-      o.ida || null, o.volta || null, o.link || null, o.fonte || "google",
+      o.ida || null, o.volta || null, o.link || null,
+      o.partida || null, o.chegada || null, o.duracao_min ?? null,
+      o.chega_outro_dia ? 1 : 0, o.fonte || "google",
       o.coletado_em || agoraISO()
     ))
   );
@@ -373,7 +440,11 @@ async function avaliarAlertas(env, obs, antes, origem) {
         assunto: `Caiu: ${a.origem} para ${a.destino} por ${brl(melhor.preco)}`,
         html: montarAlerta({
           assinatura: a, atual: melhor, anterior: ultimo, motivos,
+          // as outras opcoes da mesma coleta viram a base da comparacao
+          // "este tem escala e leva o dobro do tempo do direto"
+          avisos: montarAvisos(melhor, novas),
           urlAssinatura: `${origem}/a/${a.id}`,
+          urlPainel: `${origem}/painel`,
         }),
       });
       await env.DB.prepare(
@@ -402,9 +473,17 @@ async function enviarRelatorios(env, origem) {
 
     const corte = (desde || new Date(a.criada_em)).toISOString();
     const atual = await env.DB.prepare(
-      `SELECT preco,cia,paradas,link FROM observacoes WHERE assinatura_id = ?
+      `SELECT preco,cia,paradas,link,partida,chegada,duracao_min,chega_outro_dia
+       FROM observacoes WHERE assinatura_id = ?
        ORDER BY coletado_em DESC, preco ASC LIMIT 1`
     ).bind(a.id).first();
+    // demais opcoes da mesma leitura, para comparar escala contra direto
+    const { results: irmas } = atual
+      ? await env.DB.prepare(
+          `SELECT preco,paradas,duracao_min FROM observacoes WHERE assinatura_id = ?
+           AND coletado_em = (SELECT MAX(coletado_em) FROM observacoes WHERE assinatura_id = ?)`
+        ).bind(a.id, a.id).all()
+      : { results: [] };
     const resumo = await env.DB.prepare(
       `SELECT MIN(preco) AS minimo, COUNT(*) AS n FROM observacoes
        WHERE assinatura_id = ? AND coletado_em >= ?`
@@ -428,7 +507,9 @@ async function enviarRelatorios(env, origem) {
           minimo: resumo?.minimo ?? null,
           anterior: antes?.preco ?? null,
           amostras: resumo?.n ?? 0,
+          avisos: montarAvisos(atual, irmas || []),
           urlAssinatura: `${origem}/a/${a.id}`,
+          urlPainel: `${origem}/painel`,
         }),
       });
       await env.DB.prepare("UPDATE assinaturas SET ultimo_relatorio = ? WHERE id = ?")
@@ -451,6 +532,11 @@ export default {
     try {
       if (req.method === "GET" && rota === "/") return respostaHTML(paginaInicial());
       if (req.method === "POST" && rota === "/assinar") return criarAssinatura(req, env, url);
+      if (rota === "/painel") {
+        return req.method === "POST"
+          ? enviarPainel(req, env, url)
+          : respostaHTML(paginaPainel());
+      }
 
       const m = rota.match(/^\/a\/([A-Z0-9-]{6,12})$/i);
       if (m) {

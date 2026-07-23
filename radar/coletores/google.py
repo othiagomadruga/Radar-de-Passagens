@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import random
 import time
+from datetime import datetime
 
 from fast_flights import FlightQuery, Passengers, create_query, get_flights
 
@@ -32,6 +33,56 @@ def _consultar(rota: Rota, ida: str, volta: str | None):
         currency="BRL",
     )
     return query, get_flights(query)
+
+
+def _hora(momento) -> str | None:
+    """SimpleDatetime traz time como lista, e meia-noite vem com a hora nula."""
+    try:
+        t = momento.time
+    except AttributeError:
+        return None
+    if not t:
+        return None
+    h = t[0] if t[0] is not None else 0
+    m = t[1] if len(t) > 1 and t[1] is not None else 0
+    return f"{h:02d}:{m:02d}"
+
+
+def _instante(momento) -> datetime | None:
+    try:
+        a, m, d = momento.date
+        t = momento.time or []
+        return datetime(a, m, d, t[0] if t and t[0] is not None else 0,
+                        t[1] if len(t) > 1 and t[1] is not None else 0)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _detalhes(voo) -> dict:
+    """Horarios, duracao porta a porta e se pousa no dia seguinte."""
+    pernas = getattr(voo, "flights", None) or []
+    if not pernas:
+        return {}
+    primeira, ultima = pernas[0], pernas[-1]
+
+    # Somar a duracao das pernas ignora a conexao: um voo com escala de 3h
+    # apareceria tao curto quanto o direto. Medimos da decolagem ao pouso.
+    saida, chegada = _instante(primeira.departure), _instante(ultima.arrival)
+    if saida and chegada and chegada > saida:
+        duracao = int((chegada - saida).total_seconds() // 60)
+    else:
+        duracao = sum(int(getattr(p, "duration", 0) or 0) for p in pernas)
+
+    try:
+        chega_outro_dia = list(ultima.arrival.date) != list(primeira.departure.date)
+    except (AttributeError, TypeError):
+        chega_outro_dia = False
+    return {
+        "partida": _hora(primeira.departure),
+        "chegada": _hora(ultima.arrival),
+        "duracao_min": duracao or None,
+        "chega_outro_dia": chega_outro_dia,
+    }
 
 
 def _link(query) -> str:
@@ -64,6 +115,7 @@ def coletar(rota: Rota) -> tuple[list[Observacao], str | None]:
                             volta=volta,
                             link=_link(query),
                             coletado_em=agora().isoformat(timespec="seconds"),
+                            **_detalhes(voo),
                         )
                     )
                 ultimo_erro = None

@@ -28,6 +28,12 @@ CREATE TABLE IF NOT EXISTS observacoes (
   ida           TEXT,
   volta         TEXT,
   link          TEXT,
+  -- horario e duracao real: sem eles o preco sozinho engana, porque um voo
+  -- com escala de 4h parece igual a um direto de 1h40
+  partida         TEXT,
+  chegada         TEXT,
+  duracao_min     INTEGER,
+  chega_outro_dia INTEGER NOT NULL DEFAULT 0,
   fonte         TEXT NOT NULL,
   coletado_em   TEXT NOT NULL,
   FOREIGN KEY (assinatura_id) REFERENCES assinaturas(id) ON DELETE CASCADE

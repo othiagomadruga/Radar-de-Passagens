@@ -35,10 +35,23 @@ class Observacao:
     volta: str | None
     link: str
     coletado_em: str
+    # Campos abaixo sao o que separa um alerta util de um alerta que engana:
+    # sem eles, um voo de 4h15 com escala parece igual a um direto de 1h45.
+    partida: str | None = None        # HH:MM da decolagem
+    chegada: str | None = None        # HH:MM do pouso
+    duracao_min: int | None = None    # porta a porta, em minutos
+    chega_outro_dia: bool = False     # pousa no dia seguinte
 
     @property
     def momento(self) -> datetime:
         return datetime.fromisoformat(self.coletado_em)
+
+    @property
+    def duracao_texto(self) -> str:
+        if not self.duracao_min:
+            return "-"
+        h, m = divmod(int(self.duracao_min), 60)
+        return f"{h}h{m:02d}" if h else f"{m}min"
 
 
 def _garantir_dirs() -> None:
