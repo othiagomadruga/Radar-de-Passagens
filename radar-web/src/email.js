@@ -3,6 +3,7 @@
 // HTML de e-mail nao e HTML de site: Outlook e Gmail ignoram flex, grid e
 // boa parte do CSS moderno. Por isso tudo aqui e tabela com estilo inline.
 
+import { linksCompra } from "./links.js";
 import { brl, dataBR, esc } from "./ui.js";
 
 const AZUL = "#1f6feb";
@@ -54,7 +55,7 @@ function cabecalho(titulo, subtitulo) {
 </td></tr>`;
 }
 
-function moldura(conteudo, urlAssinatura, urlPainel) {
+function moldura(conteudo, urlAssinatura, urlPainel, urlDesativar) {
   return `<!doctype html><html><body style="margin:0;padding:0;background:${FUNDO}">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${FUNDO};padding:24px 12px">
 <tr><td align="center">
@@ -64,13 +65,60 @@ function moldura(conteudo, urlAssinatura, urlPainel) {
     ${conteudo}
     <tr><td style="padding:20px 28px 26px;border-top:1px solid ${BORDA}">
       <div style="font:400 13px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${SUAVE}">
-        <a href="${urlAssinatura}" style="color:${AZUL};text-decoration:none">Editar, pausar ou cancelar</a>
-        ${urlPainel ? ` &nbsp;·&nbsp; <a href="${urlPainel}" style="color:${AZUL};text-decoration:none">Ver todas as minhas rotas</a>` : ""}
+        <a href="${urlAssinatura}" style="color:${AZUL};text-decoration:none">Editar rota</a>
+        ${urlPainel ? ` &nbsp;·&nbsp; <a href="${urlPainel}" style="color:${AZUL};text-decoration:none">Minhas rotas</a>` : ""}
         <br>Voce recebe este e-mail porque cadastrou esta rota no Radar de Passagens.
       </div>
+      ${urlDesativar ? `
+      <div style="margin-top:16px;padding-top:14px;border-top:1px solid ${BORDA};text-align:center">
+        <a href="${urlDesativar}" style="display:inline-block;border:1px solid ${BORDA};
+          border-radius:7px;padding:9px 18px;color:${SUAVE};text-decoration:none;
+          font:600 13px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">
+          Parar de receber estes e-mails</a>
+        <div style="font:400 12px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+          color:${SUAVE};margin-top:8px">Um clique, sem precisar do codigo.</div>
+      </div>` : ""}
     </td></tr>
   </table>
 </td></tr></table></body></html>`;
+}
+
+/** Historico compacto das ultimas leituras. Fica pequeno de proposito: o
+ *  destaque continua sendo o preco atual, isto aqui e so contexto. */
+function historico(leituras = []) {
+  if (!leituras || leituras.length < 2) return "";
+  const precos = leituras.map((l) => l.preco);
+  const min = Math.min(...precos);
+  const max = Math.max(...precos);
+  const faixa = max - min || 1;
+
+  const linhas = leituras
+    .map((l) => {
+      const larg = 12 + Math.round(((l.preco - min) / faixa) * 88);
+      const ehMin = l.preco === min;
+      const hora = String(l.coletado_em || "").slice(11, 16);
+      const dia = dataBR(l.coletado_em).slice(0, 5);
+      return `<tr>
+        <td style="padding:3px 8px 3px 0;font:400 11px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+          color:${SUAVE};white-space:nowrap;width:74px">${dia} ${hora}</td>
+        <td style="padding:3px 8px 3px 0;width:100%">
+          <table role="presentation" cellpadding="0" cellspacing="0" style="width:${larg}%">
+            <tr><td style="height:7px;background:${ehMin ? VERDE : "#c7d3e0"};border-radius:4px"></td></tr>
+          </table>
+        </td>
+        <td style="padding:3px 0;font:${ehMin ? 600 : 400} 11px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+          color:${ehMin ? VERDE : SUAVE};white-space:nowrap;text-align:right">${brl(l.preco)}</td>
+      </tr>`;
+    })
+    .join("");
+
+  return `
+<tr><td style="padding:6px 28px 0">
+  <div style="font:600 11px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+    color:${SUAVE};letter-spacing:.09em;text-transform:uppercase;margin-bottom:9px">
+    Ultimas verificacoes</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${linhas}</table>
+</td></tr>`;
 }
 
 const cartaoPreco = (dentro) => `
@@ -84,7 +132,19 @@ const cartaoPreco = (dentro) => `
 const botao = (url, texto) => `
 <div style="margin-top:18px"><a href="${esc(url)}"
   style="display:inline-block;background:${AZUL};color:#ffffff;text-decoration:none;
-  padding:12px 26px;border-radius:8px;font-weight:600;font-size:15px">${texto}</a></div>`;
+  padding:12px 26px;border-radius:8px;font-weight:600;font-size:15px">${esc(texto)}</a></div>`;
+
+/** Botao principal na companhia (quando o site dela aceita busca preenchida)
+ *  e o Google Flights como comparacao. */
+function botoesCompra(assinatura, voo) {
+  const { principal, secundario } = linksCompra(assinatura, voo);
+  if (!principal) return "";
+  return botao(principal.url, principal.rotulo) + (secundario
+    ? `<div style="margin-top:11px"><a href="${esc(secundario.url)}"
+        style="color:${AZUL};text-decoration:none;font:400 13px/1
+        -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">${esc(secundario.rotulo)}</a></div>`
+    : "");
+}
 
 const aviso = (texto) => `
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
@@ -149,7 +209,8 @@ export function montarAvisos(escolhido, alternativas = []) {
 // ------------------------------------------------------------------ e-mails
 
 /** Alerta imediato: o preco caiu agora, nao espera o relatorio. */
-export function montarAlerta({ assinatura, atual, anterior, motivos, avisos = [], urlAssinatura, urlPainel }) {
+export function montarAlerta({ assinatura, atual, anterior, motivos, avisos = [],
+                               leituras = [], urlAssinatura, urlPainel, urlDesativar }) {
   const pct = anterior && anterior > 0 ? ((anterior - atual.preco) / anterior) * 100 : null;
   const datas = `${dataBR(assinatura.ida)}${assinatura.volta ? " a " + dataBR(assinatura.volta) : ""}`;
 
@@ -163,9 +224,10 @@ export function montarAlerta({ assinatura, atual, anterior, motivos, avisos = []
          -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;padding:6px 11px;border-radius:20px">
          ${pct && pct > 0 ? `queda de ${pct.toFixed(0)}%` : "novo preco"} · antes ${brl(anterior)}</span></div>` : ""}
        ${linhaVoo(atual)}
-       ${atual.link ? botao(atual.link, "Ver e comprar") : ""}
+       ${botoesCompra(assinatura, atual)}
      `)}
-     <tr><td style="padding:14px 28px 0">
+     ${historico(leituras)}
+     <tr><td style="padding:18px 28px 0">
        <div style="font:600 12px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
          color:${SUAVE};letter-spacing:.09em;text-transform:uppercase">Por que voce esta recebendo</div>
        <ul style="margin:10px 0 0;padding-left:19px;font:400 14px/1.65
@@ -177,12 +239,13 @@ export function montarAlerta({ assinatura, atual, anterior, motivos, avisos = []
          color:${SUAVE};margin:16px 0 22px">Promocao de passagem costuma durar pouco.
          Se fizer sentido, vale conferir agora.</div>
      </td></tr>`,
-    urlAssinatura, urlPainel
+    urlAssinatura, urlPainel, urlDesativar
   );
 }
 
 /** Relatorio periodico: o panorama, tenha caido ou nao. */
-export function montarRelatorio({ assinatura, atual, minimo, anterior, amostras, avisos = [], urlAssinatura, urlPainel }) {
+export function montarRelatorio({ assinatura, atual, minimo, anterior, amostras, avisos = [],
+                                  leituras = [], urlAssinatura, urlPainel, urlDesativar }) {
   const datas = `${dataBR(assinatura.ida)}${assinatura.volta ? " a " + dataBR(assinatura.volta) : ""}`;
   const titulo = `${esc(assinatura.origem)} para ${esc(assinatura.destino)}`;
 
@@ -194,7 +257,7 @@ export function montarRelatorio({ assinatura, atual, minimo, anterior, amostras,
          Ainda nao temos preco coletado para esta rota neste periodo. Se isso se repetir no
          proximo relatorio, provavelmente nao ha voos disponiveis para as datas escolhidas.
        </td></tr>`,
-      urlAssinatura, urlPainel
+      urlAssinatura, urlPainel, urlDesativar
     );
   }
 
@@ -227,16 +290,17 @@ export function montarRelatorio({ assinatura, atual, minimo, anterior, amostras,
          color:${TINTA};margin-top:4px">${brl(atual.preco)}</div>
        ${variacao}
        ${linhaVoo(atual)}
-       ${atual.link ? botao(atual.link, "Ver e comprar") : ""}
+       ${botoesCompra(assinatura, atual)}
      `)}
-     <tr><td style="padding:12px 28px 26px">
+     ${historico(leituras)}
+     <tr><td style="padding:16px 28px 26px">
        <div style="font:400 13px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${SUAVE}">
          menor preco do periodo: <strong style="color:${TINTA}">${brl(minimo)}</strong>
          &nbsp;·&nbsp; ${amostras} leitura${amostras === 1 ? "" : "s"}</div>
        ${avisos.map(aviso).join("")}
        ${teto}
      </td></tr>`,
-    urlAssinatura, urlPainel
+    urlAssinatura, urlPainel, urlDesativar
   );
 }
 

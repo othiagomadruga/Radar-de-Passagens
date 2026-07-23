@@ -7,6 +7,7 @@
 import {
   enviarEmail, montarAlerta, montarAvisos, montarBoasVindas, montarPainel, montarRelatorio,
 } from "./email.js";
+import { linksCompra } from "./links.js";
 import { brl, dataBR, esc, pagina, paginaMensagem, respostaHTML } from "./ui.js";
 
 const PERIODICIDADES = {
@@ -140,6 +141,58 @@ function paginaInicial(erros = [], d = {}) {
   );
 }
 
+function detalheVoo(v) {
+  if (!v) return "";
+  const partes = [];
+  if (v.partida && v.chegada) {
+    partes.push(`${esc(v.partida)} ate ${esc(v.chegada)}${v.chega_outro_dia ? " do dia seguinte" : ""}`);
+  }
+  if (v.duracao_min) {
+    const h = Math.floor(v.duracao_min / 60), m = v.duracao_min % 60;
+    partes.push(h ? `${h}h${String(m).padStart(2, "0")}` : `${m}min`);
+  }
+  partes.push(v.paradas ? `${v.paradas} parada${v.paradas > 1 ? "s" : ""}` : "direto");
+  if (v.cia) partes.push(esc(v.cia));
+  return partes.join(" · ");
+}
+
+function botoesSite(a) {
+  const { principal, secundario } = linksCompra(a, a.ultimo_voo || { link: a.ultimo_link, cia: a.ultima_cia });
+  if (!principal) return "";
+  return `<p style="margin:16px 0 0"><a href="${esc(principal.url)}" style="display:inline-block;
+    background:var(--acento);color:#fff;text-decoration:none;padding:10px 20px;border-radius:8px;
+    font-weight:600;font-size:14px">${esc(principal.rotulo)}</a></p>
+    ${secundario ? `<p style="margin:10px 0 0"><a href="${esc(secundario.url)}"
+      style="font-size:13px">${esc(secundario.rotulo)}</a></p>` : ""}`;
+}
+
+/** Historico das ultimas leituras. Pequeno de proposito: o destaque
+ *  continua sendo o preco atual, isto e so contexto. */
+function graficoHistorico(leituras = []) {
+  if (!leituras || leituras.length < 2) return "";
+  const precos = leituras.map((l) => l.preco);
+  const min = Math.min(...precos), max = Math.max(...precos);
+  const faixa = max - min || 1;
+  const barras = leituras
+    .map((l) => {
+      const alt = 14 + Math.round(((l.preco - min) / faixa) * 40);
+      const ehMin = l.preco === min;
+      return `<div title="${esc(dataBR(l.coletado_em))} ${esc(String(l.coletado_em).slice(11, 16))} · ${brl(l.preco)}"
+        style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:5px">
+        <div style="width:100%;max-width:24px;height:${alt}px;border-radius:3px;
+          background:${ehMin ? "var(--ok)" : "var(--borda)"}"></div>
+        <div style="font-size:10px;color:var(--suave);white-space:nowrap">
+          ${esc(String(l.coletado_em).slice(11, 16))}</div></div>`;
+    })
+    .join("");
+  return `<div class="cartao" style="margin-top:12px">
+    <div class="meta" style="text-transform:uppercase;letter-spacing:.07em;font-size:11px;
+      font-weight:600;margin-bottom:12px">Ultimas verificacoes</div>
+    <div style="display:flex;align-items:flex-end;gap:5px;height:74px">${barras}</div>
+    <div class="meta" style="margin-top:10px;font-size:12px">
+      menor ${brl(min)} · maior ${brl(max)}</div></div>`;
+}
+
 function paginaAssinatura(a, url, novo = false, salvo = false) {
   const p = PERIODICIDADES[a.periodicidade] || PERIODICIDADES.semanal;
   const aviso = novo
@@ -164,10 +217,12 @@ function paginaAssinatura(a, url, novo = false, salvo = false) {
      <div class="cartao" style="margin-top:24px">
        <div class="meta">melhor preco na ultima leitura</div>
        <div class="preco">${brl(a.ultimo_preco)}</div>
-       <div class="meta">${esc(a.ultima_cia || "")} · menor preco ja visto: ${brl(a.minimo)}
+       <div class="meta">${detalheVoo(a.ultimo_voo)}</div>
+       <div class="meta" style="margin-top:6px">menor preco ja visto: ${brl(a.minimo)}
        · ${a.amostras} leitura(s)</div>
-       ${a.ultimo_link ? `<p style="margin:14px 0 0"><a href="${esc(a.ultimo_link)}">Ver e comprar</a></p>` : ""}
-     </div>` : `
+       ${botoesSite(a)}
+     </div>
+     ${graficoHistorico(a.leituras)}` : `
      <div class="cartao" style="margin-top:24px"><div class="meta">
        Ainda sem leitura. A primeira coleta acontece nos proximos minutos.</div></div>`}
 
@@ -185,6 +240,62 @@ function paginaAssinatura(a, url, novo = false, salvo = false) {
          Cancelar assinatura e apagar meus dados</button>
      </form>`
   );
+}
+
+/** Ultimas leituras, uma por coleta (a mais barata daquele instante). */
+async function ultimasLeituras(env, id, limite = 10) {
+  const { results } = await env.DB.prepare(
+    `SELECT coletado_em, MIN(preco) AS preco FROM observacoes
+     WHERE assinatura_id = ? GROUP BY coletado_em
+     ORDER BY coletado_em DESC LIMIT ?`
+  ).bind(id, limite).all();
+  return (results || []).reverse();  // do mais antigo para o mais novo
+}
+
+// -------------------------------------------------------------- desativar
+//
+// Um clique, sem exigir o codigo. Quem recebeu o e-mail e dono do endereco,
+// e obrigar a achar o codigo para parar de receber e o tipo de atrito que faz
+// a pessoa marcar como spam em vez de cancelar.
+
+function paginaDesativar(a) {
+  return pagina(
+    "Parar de receber",
+    `<h1>Parar de receber estes e-mails?</h1>
+     <p class="sub">${esc(a.origem)} para ${esc(a.destino)},
+     ${dataBR(a.ida)}${a.volta ? " a " + dataBR(a.volta) : ""}</p>
+     <form method="post" action="/desativar/${esc(a.id)}">
+       <button type="submit" name="acao" value="pausar">Pausar o monitoramento</button>
+       <div class="dica" style="margin-top:8px">A rota continua salva. Voce pode religar
+       quando quiser pelo link de edicao.</div>
+       <button type="submit" name="acao" value="apagar" class="secundario"
+         onclick="return confirm('Apagar a rota e todo o historico? Nao da para desfazer.')">
+         Apagar a rota e meus dados</button>
+     </form>
+     <p style="margin-top:26px"><a href="/a/${esc(a.id)}">Voltar sem alterar</a></p>`
+  );
+}
+
+async function desativar(req, env, id) {
+  const a = await env.DB.prepare("SELECT * FROM assinaturas WHERE id = ?").bind(id).first();
+  if (!a) return respostaHTML(paginaMensagem("Assinatura nao encontrada",
+    "Talvez ela ja tenha sido cancelada."), 404);
+
+  if (req.method === "GET") return respostaHTML(paginaDesativar(a));
+
+  const acao = (await req.formData()).get("acao");
+  if (acao === "apagar") {
+    await env.DB.prepare("DELETE FROM observacoes WHERE assinatura_id = ?").bind(id).run();
+    await env.DB.prepare("DELETE FROM assinaturas WHERE id = ?").bind(id).run();
+    return respostaHTML(paginaMensagem("Pronto, tudo apagado",
+      "Removemos a rota e o historico dela. Voce nao recebera mais e-mails."));
+  }
+  await env.DB.prepare("UPDATE assinaturas SET ativa = 0 WHERE id = ?").bind(id).run();
+  return respostaHTML(paginaMensagem(
+    "Monitoramento pausado",
+    "Voce nao recebe mais e-mails desta rota. Ela continua salva se quiser religar.",
+    `<p style="margin-top:20px"><a href="/a/${esc(id)}">Abrir a rota</a></p>`
+  ));
 }
 
 // ------------------------------------------------------------------- painel
@@ -314,6 +425,7 @@ async function carregarAssinatura(env, id) {
     ultimo_voo: ult || null,
     minimo: agg?.minimo ?? null,
     amostras: agg?.n ?? 0,
+    leituras: await ultimasLeituras(env, id),
   };
 }
 
@@ -443,8 +555,10 @@ async function avaliarAlertas(env, obs, antes, origem) {
           // as outras opcoes da mesma coleta viram a base da comparacao
           // "este tem escala e leva o dobro do tempo do direto"
           avisos: montarAvisos(melhor, novas),
+          leituras: await ultimasLeituras(env, a.id),
           urlAssinatura: `${origem}/a/${a.id}`,
           urlPainel: `${origem}/painel`,
+          urlDesativar: `${origem}/desativar/${a.id}`,
         }),
       });
       await env.DB.prepare(
@@ -508,8 +622,10 @@ async function enviarRelatorios(env, origem) {
           anterior: antes?.preco ?? null,
           amostras: resumo?.n ?? 0,
           avisos: montarAvisos(atual, irmas || []),
+          leituras: await ultimasLeituras(env, a.id),
           urlAssinatura: `${origem}/a/${a.id}`,
           urlPainel: `${origem}/painel`,
+          urlDesativar: `${origem}/desativar/${a.id}`,
         }),
       });
       await env.DB.prepare("UPDATE assinaturas SET ultimo_relatorio = ? WHERE id = ?")
@@ -537,6 +653,9 @@ export default {
           ? enviarPainel(req, env, url)
           : respostaHTML(paginaPainel());
       }
+
+      const d = rota.match(/^\/desativar\/([A-Z0-9-]{6,12})$/i);
+      if (d) return desativar(req, env, d[1].toUpperCase());
 
       const m = rota.match(/^\/a\/([A-Z0-9-]{6,12})$/i);
       if (m) {
