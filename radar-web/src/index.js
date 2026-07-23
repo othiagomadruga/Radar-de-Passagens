@@ -14,6 +14,9 @@ import { linksCompra } from "./links.js";
 import { JS_AEROPORTOS, brl, dataBR, esc, pagina, paginaMensagem, respostaHTML } from "./ui.js";
 
 const PERIODICIDADES = {
+  // "a cada 5 horas" existe para mostrar que o robo esta trabalhando mesmo
+  // quando o preco nao muda: o relatorio traz a media por hora.
+  cinco_horas: { horas: 5, texto: "a cada 5 horas" },
   diario: { horas: 24, texto: "diario" },
   semanal: { horas: 24 * 7, texto: "semanal" },
   quinzenal: { horas: 24 * 15, texto: "quinzenal" },
@@ -130,6 +133,7 @@ function campoRota(d = {}, comEmail = true) {
   </div>
   <div class="campo"><label for="periodicidade">Quero receber o relatorio</label>
     <select id="periodicidade" name="periodicidade">
+      <option value="cinco_horas"${sel(d.periodicidade, "cinco_horas")}>a cada 5 horas</option>
       <option value="diario"${sel(d.periodicidade, "diario")}>todo dia</option>
       <option value="semanal"${sel(d.periodicidade || "semanal", "semanal")}>toda semana</option>
       <option value="quinzenal"${sel(d.periodicidade, "quinzenal")}>a cada 15 dias</option>
@@ -394,6 +398,31 @@ async function clique(env, id, destino) {
      clicado_em = COALESCE(clicado_em, ?) WHERE id = ?`
   ).bind(agoraISO(), id).run();
   return Response.redirect(alvo.href, 302);
+}
+
+/** Media por hora desde o ultimo relatorio.
+ *
+ *  Duas agregacoes em sequencia, e a ordem importa: primeiro o MENOR preco de
+ *  cada coleta (uma coleta grava varios voos, e a media crua seria puxada
+ *  pelos caros), depois a media desses minimos dentro de cada hora.
+ *
+ *  Serve para a pessoa ver que o robo trabalhou mesmo quando o preco nao mexeu.
+ */
+async function mediaPorHora(env, id, desde, fonte = null) {
+  const filtro = fonte ? "AND fonte = ?" : "AND fonte <> 'maxmilhas'";
+  const args = fonte ? [id, fonte, desde] : [id, desde];
+  const { results } = await env.DB.prepare(
+    `SELECT substr(ciclo.coletado_em, 1, 13) AS hora,
+            ROUND(AVG(ciclo.preco), 2) AS media,
+            MIN(ciclo.preco) AS minimo,
+            MAX(ciclo.preco) AS maximo,
+            COUNT(*) AS verificacoes
+     FROM (SELECT coletado_em, MIN(preco) AS preco FROM observacoes
+           WHERE assinatura_id = ? ${filtro} AND coletado_em >= ?
+           GROUP BY coletado_em) AS ciclo
+     GROUP BY hora ORDER BY hora`
+  ).bind(...args).all();
+  return results || [];
 }
 
 // -------------------------------------------------------------- desativar
@@ -878,6 +907,7 @@ async function enviarRelatorios(env, origem) {
           avisos: montarAvisos(atual, irmas || []),
           alternativas: irmas || [],
           leituras: await ultimasLeituras(env, a.id),
+          horas: await mediaPorHora(env, a.id, corte),
           urlAssinatura: `${origem}/a/${a.id}`,
           urlPainel: `${origem}/painel`,
           urlDesativar: `${origem}/desativar/${a.id}`,

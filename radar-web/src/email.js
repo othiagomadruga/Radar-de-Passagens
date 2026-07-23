@@ -137,6 +137,65 @@ function historico(leituras = []) {
 </td></tr>`;
 }
 
+/** Media por hora desde o ultimo relatorio.
+ *
+ *  Existe para responder "o robo esta trabalhando?" quando o preco nao mudou.
+ *  Sem isso, um relatorio de preco estavel parece um e-mail vazio; com a
+ *  contagem de verificacoes por hora, ele vira comprovante de trabalho.
+ */
+function porHora(horas = []) {
+  if (!horas || !horas.length) return "";
+
+  const medias = horas.map((h) => h.media);
+  const menor = Math.min(...medias);
+  const maior = Math.max(...medias);
+  const faixa = maior - menor || 1;
+  const totalVerif = horas.reduce((s, h) => s + (h.verificacoes || 0), 0);
+  const estavel = maior - menor < menor * 0.01;   // variou menos de 1%
+
+  const linhas = horas
+    .map((h) => {
+      // "2026-07-23T18" -> "23/07 18h"
+      const dia = `${h.hora.slice(8, 10)}/${h.hora.slice(5, 7)}`;
+      const hh = h.hora.slice(11, 13);
+      const larg = 14 + Math.round(((h.media - menor) / faixa) * 86);
+      const ehMin = h.media === menor;
+      return `<tr>
+        <td style="padding:4px 8px 4px 0;font:400 11px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+          color:${SUAVE};white-space:nowrap;width:66px">${dia} ${hh}h</td>
+        <td style="padding:4px 8px 4px 0;width:100%">
+          <table role="presentation" cellpadding="0" cellspacing="0" style="width:${larg}%">
+            <tr><td style="height:7px;background:${ehMin ? VERDE : "#c7d3e0"};border-radius:4px"></td></tr>
+          </table>
+        </td>
+        <td style="padding:4px 10px 4px 0;font:${ehMin ? 600 : 400} 11px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+          color:${ehMin ? VERDE : TINTA};white-space:nowrap;text-align:right">${brl(h.media)}</td>
+        <td style="padding:4px 0;font:400 10px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+          color:${SUAVE};white-space:nowrap;text-align:right">${h.verificacoes}x</td>
+      </tr>`;
+    })
+    .join("");
+
+  return `
+<tr><td style="padding:18px 28px 0">
+  <div style="font:600 12px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+    color:${SUAVE};letter-spacing:.09em;text-transform:uppercase;margin-bottom:4px">Hora a hora</div>
+  <div style="font:400 13px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+    color:${SUAVE};margin-bottom:11px">Media do menor preco em cada hora, e quantas
+    vezes verificamos.</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${linhas}</table>
+  <div style="font:400 13px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+    color:${TINTA};background:${estavel ? FUNDO : VERDE_FUNDO};border-radius:7px;
+    padding:10px 13px;margin-top:12px">
+    ${estavel
+      ? `Verificamos <strong>${totalVerif} vezes</strong> em ${horas.length} hora(s) e o preco
+         praticamente nao mudou. Seguimos de olho.`
+      : `Verificamos <strong>${totalVerif} vezes</strong> em ${horas.length} hora(s).
+         O preco oscilou entre ${brl(menor)} e ${brl(maior)}.`}
+  </div>
+</td></tr>`;
+}
+
 const cartaoPreco = (dentro) => `
 <tr><td style="padding:26px 28px 6px">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
@@ -404,8 +463,8 @@ export function montarAlerta({ assinatura, atual, anterior, motivos, avisos = []
 
 /** Relatorio periodico: o panorama, tenha caido ou nao. */
 export function montarRelatorio({ assinatura, atual, minimo, anterior, amostras, avisos = [],
-                                  leituras = [], alternativas = [], urlAssinatura, urlPainel,
-                                  urlDesativar, pixel = null, rastrear = (u) => u }) {
+                                  leituras = [], horas = [], alternativas = [], urlAssinatura,
+                                  urlPainel, urlDesativar, pixel = null, rastrear = (u) => u }) {
   const datas = `${dataBR(assinatura.ida)}${assinatura.volta ? " a " + dataBR(assinatura.volta) : ""}`;
   const titulo = `${esc(assinatura.origem)} para ${esc(assinatura.destino)}`;
 
@@ -456,6 +515,7 @@ export function montarRelatorio({ assinatura, atual, minimo, anterior, amostras,
        ${notaTrecho(assinatura, atual)}
      `)}
      ${comparativo(assinatura, atual, alternativas, rastrear)}
+     ${porHora(horas)}
      ${historico(leituras)}
      <tr><td style="padding:16px 28px 26px">
        <div style="font:400 13px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${SUAVE}">
