@@ -15,7 +15,12 @@ CREATE TABLE IF NOT EXISTS assinaturas (
   criada_em         TEXT NOT NULL,
   ultimo_relatorio  TEXT,
   ultimo_alerta     TEXT,                   -- cooldown do alerta imediato
-  ultimo_alerta_preco REAL
+  ultimo_alerta_preco REAL,
+  -- Ofertas de milhas sao opt-in: a passagem e emitida com milhas de
+  -- terceiros, entao quem recebe precisa ter escolhido receber.
+  quer_milhas       INTEGER NOT NULL DEFAULT 0,
+  ultimo_alerta_milhas TEXT,
+  ultimo_alerta_milhas_preco REAL
 );
 
 CREATE TABLE IF NOT EXISTS observacoes (

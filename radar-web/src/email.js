@@ -469,6 +469,64 @@ export function montarRelatorio({ assinatura, atual, minimo, anterior, amostras,
   );
 }
 
+/** Alerta de oferta em milhas. E-mail SEPARADO do alerta da companhia.
+ *
+ *  Separado de proposito: passagem emitida com milhas de terceiros tem regras
+ *  e riscos diferentes da tarifa vendida pela companhia. Misturar as duas no
+ *  mesmo e-mail faria a pessoa comparar so o numero e comprar sem saber o que
+ *  esta levando.
+ */
+export function assuntoMilhas(a, atual) {
+  return `Milhas: ${brl(atual.preco)} ${a.origem}-${a.destino} ${dataBR(a.ida).slice(0, 5)}`;
+}
+
+export function montarMilhas({ assinatura, atual, precoCompanhia, leituras = [],
+                               urlAssinatura, urlPainel, urlDesativar, pixel = null,
+                               rastrear = (u) => u }) {
+  const datas = `${dataBR(assinatura.ida)}${assinatura.volta ? " a " + dataBR(assinatura.volta) : ""}`;
+  const economia = precoCompanhia && precoCompanhia > atual.preco ? precoCompanhia - atual.preco : null;
+  const previaTexto = [
+    assinatura.volta ? "ida e volta" : "somente ida",
+    atual.partida ? `sai ${atual.partida}${atual.paradas ? "" : ", direto"}` : null,
+    duracaoTexto(atual.duracao_min),
+    atual.cia,
+    economia ? `${brl(economia)} abaixo da companhia` : null,
+  ].filter(Boolean).join(" · ");
+
+  return moldura(
+    `${cabecalho("Oferta em milhas",
+       `${esc(assinatura.origem)} para ${esc(assinatura.destino)} · ${datas}`)}
+     ${cartaoPreco(`
+       <div style="font:400 13px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${SUAVE}">
+         via MaxMilhas, emitida com milhas</div>
+       <div style="font:700 34px/1.1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+         color:${TINTA};margin-top:4px">${brl(atual.preco)}</div>
+       ${economia ? `<div style="margin-top:9px">
+         <span style="display:inline-block;background:${VERDE_FUNDO};color:${VERDE};
+         font:600 13px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+         padding:6px 11px;border-radius:20px">${brl(economia)} abaixo da companhia
+         (${brl(precoCompanhia)})</span></div>` : ""}
+       ${selo(assinatura, atual, atual.coletado_em)}
+       ${linhaVoo(atual)}
+       ${atual.link ? botao(rastrear(atual.link), "Ver na MaxMilhas") : ""}
+     `)}
+     ${historico(leituras)}
+     <tr><td style="padding:18px 28px 26px">
+       ${aviso(`<strong>Antes de comprar:</strong> a passagem e emitida com milhas de
+         outra pessoa, por uma agencia, nao pela companhia aerea. As condicoes de
+         remarcacao e cancelamento costumam ser mais restritas. Em 2023 uma empresa
+         do setor suspendeu vendas e deixou clientes sem voo, entao vale conferir as
+         condicoes antes de fechar.`)}
+       <div style="font:400 13px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+         color:${SUAVE};margin-top:16px">Voce recebe este e-mail porque marcou
+         "ofertas em milhas" no cadastro. Ele vem separado do alerta da companhia
+         de proposito.</div>
+     </td></tr>`,
+    urlAssinatura, urlPainel, urlDesativar,
+    { preheader: previaTexto, pixel }
+  );
+}
+
 /** Boas-vindas: unico lugar onde o codigo de edicao e entregue. */
 export function montarBoasVindas({ assinatura, urlAssinatura, urlPainel, periodicidadeTexto,
                                    pixel = null, rastrear = (u) => u }) {

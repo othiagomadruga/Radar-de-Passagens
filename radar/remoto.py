@@ -28,10 +28,15 @@ def _base() -> tuple[str, dict]:
     return url, {"x-radar-key": os.environ["RADAR_API_KEY"]}
 
 
-def buscar_rotas() -> list[Rota]:
-    """Rotas dos assinantes do site. Falha aqui nao derruba as rotas locais."""
+def buscar_rotas(somente_milhas: bool = False) -> list[Rota]:
+    """Rotas dos assinantes do site. Falha aqui nao derruba as rotas locais.
+
+    somente_milhas=True traz so quem marcou "ofertas em milhas" no cadastro,
+    para o coletor da MaxMilhas nao consultar rota de quem nao pediu.
+    """
     url, headers = _base()
-    resp = requests.get(f"{url}/api/rotas", headers=headers, timeout=TIMEOUT)
+    alvo = f"{url}/api/rotas" + ("?milhas=1" if somente_milhas else "")
+    resp = requests.get(alvo, headers=headers, timeout=TIMEOUT)
     resp.raise_for_status()
     rotas = []
     for item in resp.json().get("rotas", []):

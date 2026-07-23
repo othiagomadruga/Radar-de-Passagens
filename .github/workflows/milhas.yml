@@ -1,0 +1,39 @@
+name: Radar de Milhas
+
+# Separado do workflow principal de proposito: oferta de milhas nao e a
+# prioridade, entao roda a cada 30 min em vez de 15, e consulta apenas as
+# rotas de quem marcou "ofertas em milhas" no cadastro.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read          # este ciclo nao commita nada, o historico vive no D1
+
+concurrency:
+  group: radar-milhas
+  cancel-in-progress: false
+
+jobs:
+  milhas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Coletar ofertas em milhas
+        env:
+          RADAR_API_URL: ${{ secrets.RADAR_API_URL }}
+          RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}
+        run: python milhas.py

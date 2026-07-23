@@ -6,8 +6,9 @@
 
 import { ehAdmin, entrarAdmin, painelAdmin, sairAdmin, telaLogin } from "./admin.js";
 import {
-  assuntoAlerta, assuntoRelatorio, enviarEmail, melhorDireto, montarAlerta,
-  montarAvisos, montarBoasVindas, montarPainel, montarRelatorio,
+  assuntoAlerta, assuntoMilhas, assuntoRelatorio, enviarEmail, melhorDireto,
+  montarAlerta, montarAvisos, montarBoasVindas, montarMilhas, montarPainel,
+  montarRelatorio,
 } from "./email.js";
 import { linksCompra } from "./links.js";
 import { JS_AEROPORTOS, brl, dataBR, esc, pagina, paginaMensagem, respostaHTML } from "./ui.js";
@@ -71,6 +72,7 @@ function lerFormulario(fd) {
     flex_dias: parseInt(limpa("flex_dias") || "0", 10) || 0,
     teto: teto ? parseFloat(teto) : null,
     periodicidade: limpa("periodicidade") || "semanal",
+    quer_milhas: fd.get("quer_milhas") === "1" ? 1 : 0,
   };
 }
 
@@ -112,6 +114,19 @@ function campoRota(d = {}, comEmail = true) {
       <input id="teto" name="teto" inputmode="numeric" value="${d.teto ? esc(String(d.teto)) : ""}"
         placeholder="4000">
       <div class="dica">Opcional. Avisamos assim que ficar abaixo disso.</div></div>
+  </div>
+  <div class="campo" style="background:var(--superficie);border:1px solid var(--borda);
+    border-radius:10px;padding:14px 16px">
+    <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer;margin:0">
+      <input type="checkbox" name="quer_milhas" value="1"${d.quer_milhas ? " checked" : ""}
+        style="width:17px;height:17px;margin:2px 0 0;flex-shrink:0;accent-color:var(--acento)">
+      <span>Quero receber tambem ofertas em milhas
+        <span class="dica" style="font-weight:400;margin-top:4px">Passagens emitidas com
+        milhas de terceiros (MaxMilhas) costumam custar bem menos: no GRU para GYN de
+        02/12, R$ 658 contra R$ 1.556 da companhia. Chegam em <strong>e-mail separado</strong>,
+        e a emissao e feita por terceiro, entao confira as condicoes antes de comprar.</span>
+      </span>
+    </label>
   </div>
   <div class="campo"><label for="periodicidade">Quero receber o relatorio</label>
     <select id="periodicidade" name="periodicidade">
@@ -300,12 +315,16 @@ function paginaAssinatura(a, url, novo = false, salvo = false) {
 }
 
 /** Ultimas leituras, uma por coleta (a mais barata daquele instante). */
-async function ultimasLeituras(env, id, limite = 10) {
+async function ultimasLeituras(env, id, limite = 10, fonte = null) {
+  // fonte=null: so companhias aereas. fonte='maxmilhas': so milhas.
+  // Misturar as duas no mesmo grafico daria a impressao de queda que nao houve.
+  const filtro = fonte ? "AND fonte = ?" : "AND fonte <> 'maxmilhas'";
+  const args = fonte ? [id, fonte, limite] : [id, limite];
   const { results } = await env.DB.prepare(
     `SELECT coletado_em, MIN(preco) AS preco FROM observacoes
-     WHERE assinatura_id = ? GROUP BY coletado_em
+     WHERE assinatura_id = ? ${filtro} GROUP BY coletado_em
      ORDER BY coletado_em DESC LIMIT ?`
-  ).bind(id, limite).all();
+  ).bind(...args).all();
   return (results || []).reverse();  // do mais antigo para o mais novo
 }
 
@@ -510,10 +529,10 @@ async function criarAssinatura(req, env, url) {
   const id = gerarCodigo();
   await env.DB.prepare(
     `INSERT INTO assinaturas
-     (id,email,origem,destino,ida,volta,flex_dias,teto,periodicidade,ativa,criada_em)
-     VALUES (?,?,?,?,?,?,?,?,?,1,?)`
+     (id,email,origem,destino,ida,volta,flex_dias,teto,periodicidade,ativa,criada_em,quer_milhas)
+     VALUES (?,?,?,?,?,?,?,?,?,1,?,?)`
   ).bind(id, d.email, d.origem, d.destino, d.ida, d.volta, d.flex_dias, d.teto,
-         d.periodicidade, agoraISO()).run();
+         d.periodicidade, agoraISO(), d.quer_milhas).run();
 
   const urlAssinatura = `${url.origin}/a/${id}`;
   try {
@@ -593,9 +612,9 @@ async function atualizarAssinatura(req, env, id) {
   const ativa = fd.get("ativa") === "1" ? 1 : 0;
   await env.DB.prepare(
     `UPDATE assinaturas SET origem=?,destino=?,ida=?,volta=?,flex_dias=?,teto=?,
-     periodicidade=?,ativa=? WHERE id=?`
+     periodicidade=?,ativa=?,quer_milhas=? WHERE id=?`
   ).bind(d.origem, d.destino, d.ida, d.volta, d.flex_dias, d.teto,
-         d.periodicidade, ativa, id).run();
+         d.periodicidade, ativa, d.quer_milhas, id).run();
 
   return respostaHTML(paginaAssinatura(await carregarAssinatura(env, id), "", false, true));
 }
@@ -605,10 +624,15 @@ async function atualizarAssinatura(req, env, id) {
 const autorizado = (req, env) =>
   env.RADAR_API_KEY && req.headers.get("x-radar-key") === env.RADAR_API_KEY;
 
-async function listarRotas(env) {
+async function listarRotas(env, url) {
+  // ?milhas=1 devolve so quem optou por ofertas em milhas. O coletor da
+  // MaxMilhas roda em cadencia propria (30 min) e nao deve consultar rota de
+  // quem nao pediu.
+  const soMilhas = url?.searchParams.get("milhas") === "1";
   const { results } = await env.DB.prepare(
-    `SELECT id,origem,destino,ida,volta,flex_dias,teto FROM assinaturas
-     WHERE ativa = 1 AND ida >= date('now') ORDER BY ida`
+    `SELECT id,origem,destino,ida,volta,flex_dias,teto,quer_milhas FROM assinaturas
+     WHERE ativa = 1 AND ida >= date('now') ${soMilhas ? "AND quer_milhas = 1" : ""}
+     ORDER BY ida`
   ).all();
   return json({ rotas: results || [] });
 }
@@ -657,14 +681,91 @@ async function receberObservacoes(req, env) {
 const QUEDA_BRUSCA_PCT = 15;
 const COOLDOWN_HORAS = 6;
 const REALERTA_PCT = 5;
+// Milhas oscilam mais e sao oportunidade, nao vigilancia: cooldown maior para
+// nao encher a caixa, e so avisa quando a economia contra a companhia e real.
+const COOLDOWN_MILHAS_HORAS = 12;
+const ECONOMIA_MINIMA_PCT = 20;
+
+/** Alerta de milhas: opt-in, e-mail separado, gatilho proprio.
+ *
+ *  Dispara quando a oferta em milhas esta pelo menos ECONOMIA_MINIMA_PCT
+ *  abaixo do preco da companhia. Sem esse piso, qualquer oferta viraria
+ *  e-mail, inclusive as que nao compensam o risco de emissao por terceiro.
+ */
+async function avaliarMilhas(env, obs, origem) {
+  let enviados = 0;
+
+  for (const id of new Set(obs.map((o) => o.assinatura_id))) {
+    const a = await env.DB.prepare(
+      "SELECT * FROM assinaturas WHERE id = ? AND ativa = 1 AND quer_milhas = 1"
+    ).bind(id).first();
+    if (!a) continue;                      // nao assinou ofertas de milhas
+
+    const novas = obs.filter((o) => o.assinatura_id === id);
+    const melhor = novas.reduce((x, y) => (y.preco < x.preco ? y : x));
+
+    // preco da companhia na leitura mais recente, para medir a economia
+    const cia = await env.DB.prepare(
+      `SELECT MIN(preco) AS preco FROM observacoes WHERE assinatura_id = ?
+       AND fonte <> 'maxmilhas'
+       AND coletado_em = (SELECT MAX(coletado_em) FROM observacoes
+                          WHERE assinatura_id = ? AND fonte <> 'maxmilhas')`
+    ).bind(id, id).first();
+    const precoCia = cia?.preco ?? null;
+
+    if (precoCia) {
+      const economia = ((precoCia - melhor.preco) / precoCia) * 100;
+      if (economia < ECONOMIA_MINIMA_PCT) continue;
+    }
+
+    if (a.ultimo_alerta_milhas) {
+      const dentro = Date.now() - new Date(a.ultimo_alerta_milhas).getTime()
+        < COOLDOWN_MILHAS_HORAS * 3600 * 1000;
+      const caiuMais = melhor.preco
+        <= (a.ultimo_alerta_milhas_preco || Infinity) * (1 - REALERTA_PCT / 100);
+      if (dentro && !caiuMais) continue;
+    }
+
+    try {
+      const assunto = assuntoMilhas(a, melhor);
+      const envioId = await registrarEnvio(env, {
+        assinaturaId: a.id, email: a.email, tipo: "milhas", assunto,
+      });
+      await enviarEmail(env, {
+        para: a.email,
+        assunto,
+        html: montarMilhas({
+          ...ferramentasRastreio(origem, envioId),
+          assinatura: a, atual: melhor, precoCompanhia: precoCia,
+          leituras: await ultimasLeituras(env, a.id, 10, "maxmilhas"),
+          urlAssinatura: `${origem}/a/${a.id}`,
+          urlPainel: `${origem}/painel`,
+          urlDesativar: `${origem}/desativar/${a.id}`,
+        }),
+      });
+      await env.DB.prepare(
+        "UPDATE assinaturas SET ultimo_alerta_milhas = ?, ultimo_alerta_milhas_preco = ? WHERE id = ?"
+      ).bind(agoraISO(), melhor.preco, id).run();
+      enviados++;
+    } catch (e) {
+      console.log(`falha no alerta de milhas de ${id}:`, e.message);
+    }
+  }
+  return enviados;
+}
 
 /** Alerta imediato do assinante. Mesma logica dos gatilhos do coletor,
  *  aplicada aqui porque e aqui que o preco novo encontra o historico. */
 async function avaliarAlertas(env, obs, antes, origem) {
   let enviados = 0;
 
-  for (const id of new Set(obs.map((o) => o.assinatura_id))) {
-    const novas = obs.filter((o) => o.assinatura_id === id);
+  // Milhas seguem caminho proprio: e-mail separado, opt-in e cooldown proprio.
+  const milhas = obs.filter((o) => (o.fonte || "") === "maxmilhas");
+  if (milhas.length) enviados += await avaliarMilhas(env, milhas, origem);
+
+  const aereas = obs.filter((o) => (o.fonte || "") !== "maxmilhas");
+  for (const id of new Set(aereas.map((o) => o.assinatura_id))) {
+    const novas = aereas.filter((o) => o.assinatura_id === id);
     const melhor = novas.reduce((a, b) => (b.preco < a.preco ? b : a));
     const { ultimo, minimo } = antes.get(id) || {};
 
@@ -838,7 +939,7 @@ export default {
 
       if (rota.startsWith("/api/")) {
         if (!autorizado(req, env)) return json({ erro: "nao autorizado" }, 401);
-        if (req.method === "GET" && rota === "/api/rotas") return listarRotas(env);
+        if (req.method === "GET" && rota === "/api/rotas") return listarRotas(env, url);
         if (req.method === "POST" && rota === "/api/observacoes") return receberObservacoes(req, env);
         if (req.method === "POST" && rota === "/api/relatorios") {
           return json({ enviados: await enviarRelatorios(env, url.origin) });

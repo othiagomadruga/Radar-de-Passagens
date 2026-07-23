@@ -4,3 +4,5 @@ fast-flights==3.0.2
 typing_extensions>=4.9
 PyYAML>=6.0
 requests>=2.31
+# imita o fingerprint TLS do Chrome; sem isso a MaxMilhas devolve bloqueio
+curl_cffi>=0.7
