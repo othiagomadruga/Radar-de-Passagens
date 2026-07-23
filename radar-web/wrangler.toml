@@ -1,0 +1,26 @@
+name = "radar-passagens"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+
+# O cron roda de hora em hora e envia apenas os relatorios que estao vencidos
+# conforme a periodicidade de cada assinatura. Rodar de hora em hora (em vez de
+# uma vez por dia) faz o "diario" chegar perto do horario em que a pessoa assinou.
+[triggers]
+crons = ["7 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "radar"
+# Substituir pelo id que o comando `wrangler d1 create radar` devolve.
+# Para `wrangler dev` local qualquer uuid serve, o banco fica em .wrangler/state.
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[vars]
+REMETENTE_NOME = "Radar de Passagens"
+SITE_NOME = "Radar de Passagens"
+
+# Segredos (nunca no arquivo, cadastrar com wrangler secret put):
+#   BREVO_API_KEY     chave da API do Brevo
+#   REMETENTE_EMAIL   endereco verificado no Brevo
+#   CODIGO_CONVITE    codigo exigido no cadastro
+#   RADAR_API_KEY     chave que o coletor do GitHub Actions usa

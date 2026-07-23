@@ -1,0 +1,487 @@
+// Radar de Passagens: site de cadastro, API do coletor e cron do relatorio.
+//
+// Divisao de trabalho: este Worker cuida do site, do banco e do e-mail.
+// A coleta de precos continua no GitHub Actions, porque o fast-flights depende
+// de bibliotecas nativas que nao rodam em Worker.
+
+import { enviarEmail, montarAlerta, montarBoasVindas, montarRelatorio } from "./email.js";
+import { brl, dataBR, esc, pagina, paginaMensagem, respostaHTML } from "./ui.js";
+
+const PERIODICIDADES = {
+  diario: { horas: 24, texto: "diario" },
+  semanal: { horas: 24 * 7, texto: "semanal" },
+  quinzenal: { horas: 24 * 15, texto: "quinzenal" },
+  mensal: { horas: 24 * 30, texto: "mensal" },
+};
+
+// Alfabeto sem caracteres confundiveis (sem O/0, I/1, S/5), porque o codigo
+// vai em e-mail e alguem vai acabar digitando na mao.
+const ALFABETO = "ABCDEFGHJKLMNPQRTUVWXYZ2346789";
+
+function gerarCodigo() {
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  const s = [...bytes].map((b) => ALFABETO[b % ALFABETO.length]).join("");
+  return `${s.slice(0, 4)}-${s.slice(4)}`;
+}
+
+const json = (dados, status = 200) =>
+  new Response(JSON.stringify(dados), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+
+const agoraISO = () => new Date().toISOString();
+
+// ---------------------------------------------------------------- validacao
+
+const RE_IATA = /^[A-Z]{3}$/;
+const RE_DATA = /^\d{4}-\d{2}-\d{2}$/;
+const RE_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+function validar(d) {
+  const erros = [];
+  if (!RE_EMAIL.test(d.email || "")) erros.push("E-mail invalido.");
+  if (!RE_IATA.test(d.origem || "")) erros.push("Origem deve ser o codigo IATA com 3 letras, por exemplo GRU.");
+  if (!RE_IATA.test(d.destino || "")) erros.push("Destino deve ser o codigo IATA com 3 letras, por exemplo LIS.");
+  if (d.origem === d.destino) erros.push("Origem e destino nao podem ser iguais.");
+  if (!RE_DATA.test(d.ida || "")) erros.push("Data de ida invalida.");
+  if (d.volta && !RE_DATA.test(d.volta)) erros.push("Data de volta invalida.");
+  if (d.volta && d.volta < d.ida) erros.push("A volta nao pode ser antes da ida.");
+  if (d.ida && d.ida < agoraISO().slice(0, 10)) erros.push("A data de ida ja passou.");
+  if (!PERIODICIDADES[d.periodicidade]) erros.push("Periodicidade invalida.");
+  if (d.flex_dias < 0 || d.flex_dias > 3) erros.push("A flexibilidade vai de 0 a 3 dias.");
+  if (d.teto != null && (isNaN(d.teto) || d.teto <= 0)) erros.push("Teto invalido.");
+  return erros;
+}
+
+function lerFormulario(fd) {
+  const limpa = (k) => String(fd.get(k) ?? "").trim();
+  const teto = limpa("teto").replace(/[^\d,.]/g, "").replace(".", "").replace(",", ".");
+  return {
+    email: limpa("email").toLowerCase(),
+    origem: limpa("origem").toUpperCase(),
+    destino: limpa("destino").toUpperCase(),
+    ida: limpa("ida"),
+    volta: limpa("volta") || null,
+    flex_dias: parseInt(limpa("flex_dias") || "0", 10) || 0,
+    teto: teto ? parseFloat(teto) : null,
+    periodicidade: limpa("periodicidade") || "semanal",
+  };
+}
+
+// ------------------------------------------------------------------ paginas
+
+function campoRota(d = {}, comEmail = true) {
+  const sel = (v, alvo) => (v === alvo ? " selected" : "");
+  return `
+  ${comEmail ? `<div class="campo"><label for="email">Seu e-mail</label>
+    <input id="email" name="email" type="email" required value="${esc(d.email || "")}"
+      placeholder="voce@exemplo.com">
+    <div class="dica">E para onde vai o relatorio e o link de edicao.</div></div>` : ""}
+  <div class="linha">
+    <div class="campo"><label for="origem">Origem</label>
+      <input id="origem" name="origem" required maxlength="3" value="${esc(d.origem || "")}"
+        placeholder="GRU" style="text-transform:uppercase">
+      <div class="dica">Codigo do aeroporto, 3 letras.</div></div>
+    <div class="campo"><label for="destino">Destino</label>
+      <input id="destino" name="destino" required maxlength="3" value="${esc(d.destino || "")}"
+        placeholder="LIS" style="text-transform:uppercase"></div>
+  </div>
+  <div class="linha">
+    <div class="campo"><label for="ida">Ida</label>
+      <input id="ida" name="ida" type="date" required value="${esc(d.ida || "")}"></div>
+    <div class="campo"><label for="volta">Volta</label>
+      <input id="volta" name="volta" type="date" value="${esc(d.volta || "")}">
+      <div class="dica">Deixe vazio para somente ida.</div></div>
+  </div>
+  <div class="linha">
+    <div class="campo"><label for="flex_dias">Flexibilidade</label>
+      <select id="flex_dias" name="flex_dias">
+        <option value="0"${sel(String(d.flex_dias ?? 0), "0")}>datas exatas</option>
+        <option value="1"${sel(String(d.flex_dias), "1")}>mais ou menos 1 dia</option>
+        <option value="2"${sel(String(d.flex_dias), "2")}>mais ou menos 2 dias</option>
+        <option value="3"${sel(String(d.flex_dias), "3")}>mais ou menos 3 dias</option>
+      </select>
+      <div class="dica">Flexibilizar aumenta muito a chance de achar promocao.</div></div>
+    <div class="campo"><label for="teto">Teto de preco</label>
+      <input id="teto" name="teto" inputmode="numeric" value="${d.teto ? esc(String(d.teto)) : ""}"
+        placeholder="4000">
+      <div class="dica">Opcional. Avisamos assim que ficar abaixo disso.</div></div>
+  </div>
+  <div class="campo"><label for="periodicidade">Quero receber o relatorio</label>
+    <select id="periodicidade" name="periodicidade">
+      <option value="diario"${sel(d.periodicidade, "diario")}>todo dia</option>
+      <option value="semanal"${sel(d.periodicidade || "semanal", "semanal")}>toda semana</option>
+      <option value="quinzenal"${sel(d.periodicidade, "quinzenal")}>a cada 15 dias</option>
+      <option value="mensal"${sel(d.periodicidade, "mensal")}>uma vez por mes</option>
+    </select>
+    <div class="dica">Se o preco despencar, avisamos na hora, sem esperar o relatorio.</div></div>`;
+}
+
+function paginaInicial(erros = [], d = {}) {
+  return pagina(
+    "Radar de Passagens",
+    `<h1>Monitore o preco da sua passagem</h1>
+     <p class="sub">Cadastre a rota uma vez. Consultamos o preco varias vezes por dia
+     e mandamos um relatorio no seu e-mail. Se cair de verdade, avisamos na hora.</p>
+     ${erros.length ? `<div class="erro">${erros.map(esc).join("<br>")}</div>` : ""}
+     <form method="post" action="/assinar">
+       <h2>A viagem</h2>
+       ${campoRota(d)}
+       <h2>Convite</h2>
+       <div class="campo"><label for="convite">Codigo de convite</label>
+         <input id="convite" name="convite" required placeholder="informe o codigo que voce recebeu">
+         <div class="dica">O cadastro e restrito a quem recebeu o codigo.</div></div>
+       <button type="submit">Comecar a monitorar</button>
+     </form>`
+  );
+}
+
+function paginaAssinatura(a, url, novo = false, salvo = false) {
+  const p = PERIODICIDADES[a.periodicidade] || PERIODICIDADES.semanal;
+  const aviso = novo
+    ? `<div class="cartao" style="border-color:var(--ok);margin-bottom:24px">
+         <strong>Monitoramento ativo.</strong>
+         <div class="meta" style="margin-top:6px">Enviamos este link para ${esc(a.email)}.
+         Guarde o codigo abaixo, e por ele que voce volta aqui.</div>
+         <p style="margin:14px 0 0"><span class="codigo">${esc(a.id)}</span></p>
+       </div>`
+    : salvo
+    ? `<div class="cartao" style="border-color:var(--ok);margin-bottom:24px"><strong>Alteracoes salvas.</strong></div>`
+    : "";
+
+  return pagina(
+    "Sua assinatura",
+    `${aviso}
+     <h1>${esc(a.origem)} para ${esc(a.destino)}</h1>
+     <p class="sub">${dataBR(a.ida)}${a.volta ? " a " + dataBR(a.volta) : ""} ·
+     relatorio ${esc(p.texto)} · ${a.ativa ? "ativa" : "pausada"}</p>
+
+     ${a.ultimo_preco != null ? `
+     <div class="cartao" style="margin-top:24px">
+       <div class="meta">melhor preco na ultima leitura</div>
+       <div class="preco">${brl(a.ultimo_preco)}</div>
+       <div class="meta">${esc(a.ultima_cia || "")} · menor preco ja visto: ${brl(a.minimo)}
+       · ${a.amostras} leitura(s)</div>
+       ${a.ultimo_link ? `<p style="margin:14px 0 0"><a href="${esc(a.ultimo_link)}">Ver e comprar</a></p>` : ""}
+     </div>` : `
+     <div class="cartao" style="margin-top:24px"><div class="meta">
+       Ainda sem leitura. A primeira coleta acontece nos proximos minutos.</div></div>`}
+
+     <form method="post" action="/a/${esc(a.id)}">
+       <h2>Editar</h2>
+       ${campoRota(a, false)}
+       <div class="campo"><label for="ativa">Situacao</label>
+         <select id="ativa" name="ativa">
+           <option value="1"${a.ativa ? " selected" : ""}>monitorando</option>
+           <option value="0"${!a.ativa ? " selected" : ""}>pausada, nao receber nada</option>
+         </select></div>
+       <button type="submit" name="acao" value="salvar">Salvar alteracoes</button>
+       <button type="submit" name="acao" value="cancelar" class="secundario"
+         onclick="return confirm('Cancelar esta assinatura e apagar o historico? Nao da para desfazer.')">
+         Cancelar assinatura e apagar meus dados</button>
+     </form>`
+  );
+}
+
+// -------------------------------------------------------------- handlers web
+
+async function criarAssinatura(req, env, url) {
+  const fd = await req.formData();
+  const d = lerFormulario(fd);
+
+  if (String(fd.get("convite") || "").trim() !== (env.CODIGO_CONVITE || "")) {
+    return respostaHTML(paginaInicial(["Codigo de convite invalido."], d), 403);
+  }
+  const erros = validar(d);
+  if (erros.length) return respostaHTML(paginaInicial(erros, d), 400);
+
+  const jaTem = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM assinaturas WHERE email = ? AND ativa = 1"
+  ).bind(d.email).first();
+  if ((jaTem?.n ?? 0) >= 10) {
+    return respostaHTML(
+      paginaInicial(["Limite de 10 rotas ativas por e-mail atingido."], d), 429
+    );
+  }
+
+  const id = gerarCodigo();
+  await env.DB.prepare(
+    `INSERT INTO assinaturas
+     (id,email,origem,destino,ida,volta,flex_dias,teto,periodicidade,ativa,criada_em)
+     VALUES (?,?,?,?,?,?,?,?,?,1,?)`
+  ).bind(id, d.email, d.origem, d.destino, d.ida, d.volta, d.flex_dias, d.teto,
+         d.periodicidade, agoraISO()).run();
+
+  const urlAssinatura = `${url.origin}/a/${id}`;
+  try {
+    await enviarEmail(env, {
+      para: d.email,
+      assunto: `Monitorando ${d.origem} para ${d.destino}`,
+      html: montarBoasVindas({
+        assinatura: { ...d, id },
+        urlAssinatura,
+        periodicidadeTexto: PERIODICIDADES[d.periodicidade].texto,
+      }),
+    });
+  } catch (e) {
+    // O cadastro nao pode se perder porque o e-mail falhou: a pagina seguinte
+    // mostra o codigo na tela, entao a pessoa nao fica sem acesso.
+    console.log("falha ao enviar boas-vindas:", e.message);
+  }
+  return Response.redirect(`${urlAssinatura}?novo=1`, 303);
+}
+
+async function carregarAssinatura(env, id) {
+  const a = await env.DB.prepare("SELECT * FROM assinaturas WHERE id = ?").bind(id).first();
+  if (!a) return null;
+  const ult = await env.DB.prepare(
+    `SELECT preco, cia, link FROM observacoes WHERE assinatura_id = ?
+     ORDER BY coletado_em DESC, preco ASC LIMIT 1`
+  ).bind(id).first();
+  const agg = await env.DB.prepare(
+    "SELECT MIN(preco) AS minimo, COUNT(*) AS n FROM observacoes WHERE assinatura_id = ?"
+  ).bind(id).first();
+  return {
+    ...a,
+    ativa: !!a.ativa,
+    ultimo_preco: ult?.preco ?? null,
+    ultima_cia: ult?.cia ?? null,
+    ultimo_link: ult?.link ?? null,
+    minimo: agg?.minimo ?? null,
+    amostras: agg?.n ?? 0,
+  };
+}
+
+async function atualizarAssinatura(req, env, id) {
+  const atual = await carregarAssinatura(env, id);
+  if (!atual) return respostaHTML(paginaMensagem("Assinatura nao encontrada",
+    "Confira o link. Se voce cancelou, os dados foram apagados."), 404);
+
+  const fd = await req.formData();
+  if (fd.get("acao") === "cancelar") {
+    await env.DB.prepare("DELETE FROM observacoes WHERE assinatura_id = ?").bind(id).run();
+    await env.DB.prepare("DELETE FROM assinaturas WHERE id = ?").bind(id).run();
+    return respostaHTML(paginaMensagem(
+      "Assinatura cancelada",
+      "Removemos a rota e todo o historico dela. Voce nao recebera mais e-mails."
+    ));
+  }
+
+  const d = { ...lerFormulario(fd), email: atual.email };
+  const erros = validar(d);
+  if (erros.length) return respostaHTML(paginaInicial(erros, d), 400);
+
+  const ativa = fd.get("ativa") === "1" ? 1 : 0;
+  await env.DB.prepare(
+    `UPDATE assinaturas SET origem=?,destino=?,ida=?,volta=?,flex_dias=?,teto=?,
+     periodicidade=?,ativa=? WHERE id=?`
+  ).bind(d.origem, d.destino, d.ida, d.volta, d.flex_dias, d.teto,
+         d.periodicidade, ativa, id).run();
+
+  return respostaHTML(paginaAssinatura(await carregarAssinatura(env, id), "", false, true));
+}
+
+// ------------------------------------------------------------- api do coletor
+
+const autorizado = (req, env) =>
+  env.RADAR_API_KEY && req.headers.get("x-radar-key") === env.RADAR_API_KEY;
+
+async function listarRotas(env) {
+  const { results } = await env.DB.prepare(
+    `SELECT id,origem,destino,ida,volta,flex_dias,teto FROM assinaturas
+     WHERE ativa = 1 AND ida >= date('now') ORDER BY ida`
+  ).all();
+  return json({ rotas: results || [] });
+}
+
+async function receberObservacoes(req, env) {
+  const corpo = await req.json();
+  const obs = Array.isArray(corpo?.observacoes) ? corpo.observacoes : [];
+  if (!obs.length) return json({ gravadas: 0 });
+  if (obs.length > 500) return json({ erro: "lote grande demais" }, 413);
+
+  const stmt = env.DB.prepare(
+    `INSERT INTO observacoes
+     (assinatura_id,preco,moeda,cia,paradas,ida,volta,link,fonte,coletado_em)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`
+  );
+  // Estado ANTES de gravar: e com ele que se sabe se o preco caiu.
+  const alvos = [...new Set(obs.map((o) => o.assinatura_id))];
+  const antes = new Map();
+  for (const id of alvos) {
+    const prev = await env.DB.prepare(
+      `SELECT MIN(preco) AS ultimo FROM observacoes WHERE assinatura_id = ?
+       AND coletado_em = (SELECT MAX(coletado_em) FROM observacoes WHERE assinatura_id = ?)`
+    ).bind(id, id).first();
+    const hist = await env.DB.prepare(
+      "SELECT MIN(preco) AS minimo FROM observacoes WHERE assinatura_id = ?"
+    ).bind(id).first();
+    antes.set(id, { ultimo: prev?.ultimo ?? null, minimo: hist?.minimo ?? null });
+  }
+
+  await env.DB.batch(
+    obs.map((o) => stmt.bind(
+      o.assinatura_id, o.preco, o.moeda || "BRL", o.cia || null, o.paradas ?? null,
+      o.ida || null, o.volta || null, o.link || null, o.fonte || "google",
+      o.coletado_em || agoraISO()
+    ))
+  );
+
+  const url = new URL(req.url);
+  const alertas = await avaliarAlertas(env, obs, antes, url.origin);
+  return json({ gravadas: obs.length, alertas });
+}
+
+const QUEDA_BRUSCA_PCT = 15;
+const COOLDOWN_HORAS = 6;
+const REALERTA_PCT = 5;
+
+/** Alerta imediato do assinante. Mesma logica dos gatilhos do coletor,
+ *  aplicada aqui porque e aqui que o preco novo encontra o historico. */
+async function avaliarAlertas(env, obs, antes, origem) {
+  let enviados = 0;
+
+  for (const id of new Set(obs.map((o) => o.assinatura_id))) {
+    const novas = obs.filter((o) => o.assinatura_id === id);
+    const melhor = novas.reduce((a, b) => (b.preco < a.preco ? b : a));
+    const { ultimo, minimo } = antes.get(id) || {};
+
+    const motivos = [];
+    if (ultimo && ultimo > 0) {
+      const pct = ((ultimo - melhor.preco) / ultimo) * 100;
+      if (pct >= QUEDA_BRUSCA_PCT) motivos.push(`queda de ${pct.toFixed(0)}% desde a ultima leitura`);
+    }
+    if (minimo != null && melhor.preco < minimo) motivos.push("menor preco ja visto nesta rota");
+
+    const a = await env.DB.prepare("SELECT * FROM assinaturas WHERE id = ? AND ativa = 1")
+      .bind(id).first();
+    if (!a) continue;
+    if (a.teto && melhor.preco <= a.teto) motivos.push(`abaixo do seu teto de ${brl(a.teto)}`);
+    if (!motivos.length) continue;
+
+    // anti-ruido: sem isso o assinante recebe dezenas de e-mails e marca como spam
+    if (a.ultimo_alerta) {
+      const dentro = Date.now() - new Date(a.ultimo_alerta).getTime() < COOLDOWN_HORAS * 3600 * 1000;
+      const caiuMais = melhor.preco <= (a.ultimo_alerta_preco || Infinity) * (1 - REALERTA_PCT / 100);
+      if (dentro && !caiuMais) continue;
+    }
+
+    try {
+      await enviarEmail(env, {
+        para: a.email,
+        assunto: `Caiu: ${a.origem} para ${a.destino} por ${brl(melhor.preco)}`,
+        html: montarAlerta({
+          assinatura: a, atual: melhor, anterior: ultimo, motivos,
+          urlAssinatura: `${origem}/a/${a.id}`,
+        }),
+      });
+      await env.DB.prepare(
+        "UPDATE assinaturas SET ultimo_alerta = ?, ultimo_alerta_preco = ? WHERE id = ?"
+      ).bind(agoraISO(), melhor.preco, id).run();
+      enviados++;
+    } catch (e) {
+      console.log(`falha no alerta de ${id}:`, e.message);
+    }
+  }
+  return enviados;
+}
+
+// ------------------------------------------------------------ cron: relatorio
+
+async function enviarRelatorios(env, origem) {
+  const { results: assinaturas } = await env.DB.prepare(
+    "SELECT * FROM assinaturas WHERE ativa = 1 ORDER BY ultimo_relatorio IS NOT NULL, ultimo_relatorio LIMIT 40"
+  ).all();
+
+  let enviados = 0;
+  for (const a of assinaturas || []) {
+    const periodo = PERIODICIDADES[a.periodicidade] || PERIODICIDADES.semanal;
+    const desde = a.ultimo_relatorio ? new Date(a.ultimo_relatorio) : null;
+    if (desde && Date.now() - desde.getTime() < periodo.horas * 3600 * 1000) continue;
+
+    const corte = (desde || new Date(a.criada_em)).toISOString();
+    const atual = await env.DB.prepare(
+      `SELECT preco,cia,paradas,link FROM observacoes WHERE assinatura_id = ?
+       ORDER BY coletado_em DESC, preco ASC LIMIT 1`
+    ).bind(a.id).first();
+    const resumo = await env.DB.prepare(
+      `SELECT MIN(preco) AS minimo, COUNT(*) AS n FROM observacoes
+       WHERE assinatura_id = ? AND coletado_em >= ?`
+    ).bind(a.id, corte).first();
+    const antes = desde
+      ? await env.DB.prepare(
+          `SELECT MIN(preco) AS preco FROM observacoes
+           WHERE assinatura_id = ? AND coletado_em <= ?`
+        ).bind(a.id, corte).first()
+      : null;
+
+    try {
+      await enviarEmail(env, {
+        para: a.email,
+        assunto: atual
+          ? `${a.origem} para ${a.destino}: ${brl(atual.preco)}`
+          : `${a.origem} para ${a.destino}: sem leitura no periodo`,
+        html: montarRelatorio({
+          assinatura: a,
+          atual,
+          minimo: resumo?.minimo ?? null,
+          anterior: antes?.preco ?? null,
+          amostras: resumo?.n ?? 0,
+          urlAssinatura: `${origem}/a/${a.id}`,
+        }),
+      });
+      await env.DB.prepare("UPDATE assinaturas SET ultimo_relatorio = ? WHERE id = ?")
+        .bind(agoraISO(), a.id).run();
+      enviados++;
+    } catch (e) {
+      console.log(`falha no relatorio de ${a.id}:`, e.message);
+    }
+  }
+  return enviados;
+}
+
+// ----------------------------------------------------------------- roteamento
+
+export default {
+  async fetch(req, env) {
+    const url = new URL(req.url);
+    const rota = url.pathname.replace(/\/+$/, "") || "/";
+
+    try {
+      if (req.method === "GET" && rota === "/") return respostaHTML(paginaInicial());
+      if (req.method === "POST" && rota === "/assinar") return criarAssinatura(req, env, url);
+
+      const m = rota.match(/^\/a\/([A-Z0-9-]{6,12})$/i);
+      if (m) {
+        const id = m[1].toUpperCase();
+        if (req.method === "POST") return atualizarAssinatura(req, env, id);
+        const a = await carregarAssinatura(env, id);
+        if (!a) return respostaHTML(paginaMensagem("Assinatura nao encontrada",
+          "Confira o link. Se voce cancelou, os dados foram apagados."), 404);
+        return respostaHTML(paginaAssinatura(a, url.href, url.searchParams.has("novo")));
+      }
+
+      if (rota.startsWith("/api/")) {
+        if (!autorizado(req, env)) return json({ erro: "nao autorizado" }, 401);
+        if (req.method === "GET" && rota === "/api/rotas") return listarRotas(env);
+        if (req.method === "POST" && rota === "/api/observacoes") return receberObservacoes(req, env);
+        if (req.method === "POST" && rota === "/api/relatorios") {
+          return json({ enviados: await enviarRelatorios(env, url.origin) });
+        }
+      }
+
+      return respostaHTML(paginaMensagem("Pagina nao encontrada",
+        "O endereco nao existe.", '<p><a href="/">Voltar ao inicio</a></p>'), 404);
+    } catch (e) {
+      console.log("erro:", e.stack || e.message);
+      return respostaHTML(paginaMensagem("Algo deu errado",
+        "Tente de novo em instantes."), 500);
+    }
+  },
+
+  async scheduled(evento, env, ctx) {
+    const origem = env.SITE_URL || "https://radar-passagens.workers.dev";
+    ctx.waitUntil(enviarRelatorios(env, origem));
+  },
+};

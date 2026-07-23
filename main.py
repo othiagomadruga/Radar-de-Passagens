@@ -22,13 +22,44 @@ if hasattr(sys.stdout, "buffer"):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
-from radar import notificar  # noqa: E402
+from radar import notificar, remoto  # noqa: E402
 from radar.coletores import google  # noqa: E402
 from radar.config import CICLOS_SEM_DADO_ALERTA, carregar_ambiente, carregar_rotas  # noqa: E402
 from radar.deteccao import avaliar  # noqa: E402
 from radar.storage import agora, carregar_estado, gravar_observacoes, salvar_estado  # noqa: E402
 
 COLETORES = [google]
+
+
+def coletar_assinantes() -> None:
+    """Rotas cadastradas no site. Historico e alerta ficam no Worker, nao aqui:
+    o repositorio guarda so as rotas pessoais do rotas.yaml."""
+    try:
+        rotas = remoto.buscar_rotas()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[site] nao foi possivel buscar as rotas: {exc}")
+        return
+
+    if not rotas:
+        print("[site] nenhuma assinatura ativa")
+        return
+
+    print(f"\n### assinaturas do site: {len(rotas)} rota(s) ###")
+    for rota in rotas:
+        if rota.expirada:
+            continue
+        print(f"\n=== {rota.id} · {rota.trecho} · {rota.ida} -> {rota.volta or 'so ida'} ===")
+        obs, erro = google.coletar(rota)
+        if not obs:
+            print(f"  [saude] google: sem dados {erro or ''}")
+            continue
+        melhor = min(obs, key=lambda o: o.preco)
+        print(f"  {len(obs)} resultados · mais barato R$ {melhor.preco:,.0f} ({melhor.cia})")
+        try:
+            gravadas = remoto.enviar_observacoes(obs)
+            print(f"  {gravadas} observacao(oes) enviada(s) ao site")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [site] falha ao enviar observacoes: {exc}")
 
 
 def main() -> int:
@@ -109,6 +140,12 @@ def main() -> int:
         notificar.enviar(amb, notificar.montar_saude(problemas_saude))
 
     salvar_estado(estado)
+
+    # rotas dos assinantes do site, se o Worker estiver configurado
+    if not args.rota and remoto.configurado():
+        coletar_assinantes()
+    elif not args.rota:
+        print("\n[site] RADAR_API_URL/RADAR_API_KEY ausentes, assinaturas ignoradas")
     print(f"\nCiclo concluido. {ativas} rota(s) ativa(s).")
     return 0
 

@@ -34,6 +34,9 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # opcionais: sem eles o coletor roda so com as rotas do rotas.yaml
+          RADAR_API_URL: ${{ secrets.RADAR_API_URL }}
+          RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}
         run: python main.py
 
       - name: Commitar historico
