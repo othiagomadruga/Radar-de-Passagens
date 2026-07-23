@@ -142,7 +142,11 @@ function campoRota(d = {}, comEmail = true) {
     <div class="dica">Se o preco despencar, avisamos na hora, sem esperar o relatorio.</div></div>`;
 }
 
-function paginaInicial(erros = [], d = {}) {
+/** O convite so aparece se o segredo CODIGO_CONVITE estiver preenchido.
+ *  Assim da para abrir ou fechar o cadastro sem mexer em codigo: basta
+ *  `wrangler secret delete CODIGO_CONVITE` para abrir, ou `secret put` para
+ *  voltar a exigir. */
+function paginaInicial(erros = [], d = {}, exigeConvite = false) {
   return pagina(
     "Radar de Passagens",
     `<h1>Monitore o preco da sua passagem</h1>
@@ -152,10 +156,10 @@ function paginaInicial(erros = [], d = {}) {
      <form method="post" action="/assinar">
        <h2>A viagem</h2>
        ${campoRota(d)}
-       <h2>Convite</h2>
+       ${exigeConvite ? `<h2>Convite</h2>
        <div class="campo"><label for="convite">Codigo de convite</label>
          <input id="convite" name="convite" required placeholder="informe o codigo que voce recebeu">
-         <div class="dica">O cadastro e restrito a quem recebeu o codigo.</div></div>
+         <div class="dica">O cadastro e restrito a quem recebeu o codigo.</div></div>` : ""}
        <button type="submit">Comecar a monitorar</button>
      </form>
      <p style="margin-top:26px"><a href="/painel">Ja tenho cadastro, quero meus links</a></p>`,
@@ -540,18 +544,23 @@ async function criarAssinatura(req, env, url) {
   const fd = await req.formData();
   const d = lerFormulario(fd);
 
-  if (String(fd.get("convite") || "").trim() !== (env.CODIGO_CONVITE || "")) {
-    return respostaHTML(paginaInicial(["Codigo de convite invalido."], d), 403);
+  // Segredo vazio = cadastro aberto. So valida quando ha codigo configurado.
+  const exigeConvite = Boolean(env.CODIGO_CONVITE);
+  if (exigeConvite && String(fd.get("convite") || "").trim() !== env.CODIGO_CONVITE) {
+    return respostaHTML(paginaInicial(["Codigo de convite invalido."], d, true), 403);
   }
   const erros = validar(d);
-  if (erros.length) return respostaHTML(paginaInicial(erros, d), 400);
+  if (erros.length) return respostaHTML(paginaInicial(erros, d, exigeConvite), 400);
 
+  // Unico freio quando o cadastro esta aberto: teto de rotas por e-mail.
+  // Cada rota vira consulta a cada ciclo, entao sem limite alguem cadastraria
+  // dezenas e a coleta ficaria lenta para todo mundo.
   const jaTem = await env.DB.prepare(
     "SELECT COUNT(*) AS n FROM assinaturas WHERE email = ? AND ativa = 1"
   ).bind(d.email).first();
   if ((jaTem?.n ?? 0) >= 10) {
     return respostaHTML(
-      paginaInicial(["Limite de 10 rotas ativas por e-mail atingido."], d), 429
+      paginaInicial(["Limite de 10 rotas ativas por e-mail atingido."], d, exigeConvite), 429
     );
   }
 
@@ -931,7 +940,8 @@ export default {
     const rota = url.pathname.replace(/\/+$/, "") || "/";
 
     try {
-      if (req.method === "GET" && rota === "/") return respostaHTML(paginaInicial());
+      if (req.method === "GET" && rota === "/")
+          return respostaHTML(paginaInicial([], {}, Boolean(env.CODIGO_CONVITE)));
       if (req.method === "POST" && rota === "/assinar") return criarAssinatura(req, env, url);
       if (rota === "/painel") {
         return req.method === "POST"
