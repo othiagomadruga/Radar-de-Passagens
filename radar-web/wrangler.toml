@@ -19,6 +19,10 @@ database_id = "b0b80956-d900-47e2-9e41-485fd827b49c"
 [vars]
 REMETENTE_NOME = "Radar de Passagens"
 SITE_NOME = "Radar de Passagens"
+# Monta os links dentro dos e-mails (comprar, editar, cancelar). Precisa ser o
+# endereco publico: com localhost aqui, nenhum botao funcionaria para quem
+# recebe. Trocar aqui e republicar se um dia entrar um dominio proprio.
+SITE_URL = "https://radar-passagens.thiagogodoymadruga.workers.dev"
 
 # Segredos (nunca no arquivo, cadastrar com wrangler secret put):
 #   BREVO_API_KEY     chave da API do Brevo
