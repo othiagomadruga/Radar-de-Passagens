@@ -498,7 +498,10 @@ async function carregarAssinatura(env, id) {
   const a = await env.DB.prepare("SELECT * FROM assinaturas WHERE id = ?").bind(id).first();
   if (!a) return null;
   const ult = await env.DB.prepare(
-    `SELECT preco, cia, link, partida, chegada, duracao_min, chega_outro_dia, coletado_em
+    // `paradas` e obrigatorio aqui: sem ela detalheVoo trata undefined como
+    // falsy e rotula qualquer voo como "direto", inclusive um com conexao.
+    `SELECT preco, cia, paradas, link, partida, chegada, duracao_min,
+            chega_outro_dia, coletado_em
      FROM observacoes WHERE assinatura_id = ?
      ORDER BY coletado_em DESC, preco ASC LIMIT 1`
   ).bind(id).first();
