@@ -1,0 +1,26 @@
+# Rotas monitoradas pelo Radar de Passagens.
+# Edite este arquivo (pode ser direto pelo site do GitHub, inclusive no celular).
+# Cada commit aqui ja vale para a proxima execucao, sem mexer em codigo.
+#
+#   id         identificador unico e curto (usado no historico, nao repita)
+#   origem     codigo IATA do aeroporto de partida (GRU, CGH, VCP, GIG...)
+#   destino    codigo IATA do aeroporto de chegada
+#   ida        data de ida    AAAA-MM-DD
+#   volta      data de volta  AAAA-MM-DD  (omita para somente ida)
+#   flex_dias  0 = datas exatas. 2 = testa tambem -2..+2 dias em volta das datas
+#   teto       alerta imediato se o preco ficar abaixo deste valor em reais (opcional)
+#   adultos    padrao 1
+#   classe     economy | premium-economy | business | first
+#   ativa      false pausa a rota sem precisar apagar
+
+rotas:
+  - id: gru-lis-out26
+    origem: GRU
+    destino: LIS
+    ida: 2026-10-12
+    volta: 2026-10-26
+    flex_dias: 0
+    teto: 4000
+    adultos: 1
+    classe: economy
+    ativa: true
