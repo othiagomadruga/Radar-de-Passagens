@@ -218,6 +218,72 @@ function linhaVoo(v) {
     color:${SUAVE};margin-top:10px">${partes.join(" &nbsp;·&nbsp; ")}</div>`;
 }
 
+/** Escolhe o direto mais barato entre as opcoes da mesma coleta. */
+export function melhorDireto(alternativas = []) {
+  const diretos = (alternativas || []).filter((a) => !a.paradas && a.preco);
+  if (!diretos.length) return null;
+  return diretos.reduce((a, b) => (b.preco < a.preco ? b : a));
+}
+
+const difTempo = (a, b) => {
+  const m = Math.abs((a || 0) - (b || 0));
+  const h = Math.floor(m / 60);
+  return h ? `${h}h${String(m % 60).padStart(2, "0")}` : `${m}min`;
+};
+
+/** Compara o mais barato com o melhor direto, lado a lado.
+ *
+ *  Existe porque o mais barato nem sempre e o que a pessoa compraria: no
+ *  GRU-GYN de 02/12, R$ 1.118 leva 6h com conexao no Rio e R$ 1.206 faz em
+ *  1h40 direto. Mostrar os dois deixa a escolha com quem viaja, em vez de o
+ *  sistema decidir por preco e a pessoa descobrir a conexao no checkout.
+ */
+function comparativo(assinatura, escolhido, alternativas = [], rastrear = (u) => u) {
+  if (!escolhido?.paradas) return "";               // ja e direto, nao ha o que comparar
+  const direto = melhorDireto(alternativas);
+  if (!direto || direto.preco === escolhido.preco) return "";
+
+  const linha = (rotulo, v, destaque) => {
+    const { principal } = linksCompra(assinatura, v);
+    return `<tr>
+      <td style="padding:9px 10px 9px 0;vertical-align:top">
+        <div style="font:600 11px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+          color:${destaque ? VERDE : SUAVE};letter-spacing:.06em;text-transform:uppercase">${rotulo}</div>
+        <div style="font:700 19px/1.2 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+          color:${TINTA};margin-top:3px">${brl(v.preco)}</div>
+        <div style="font:400 12px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+          color:${SUAVE};margin-top:2px">${duracaoTexto(v.duracao_min) || "-"} ·
+          ${v.paradas ? `${v.paradas} parada${v.paradas > 1 ? "s" : ""}` : "direto"}${v.cia ? ` · ${esc(v.cia)}` : ""}
+          ${v.partida ? `<br>sai ${esc(v.partida)}` : ""}</div>
+      </td>
+      <td style="padding:9px 0;vertical-align:middle;text-align:right;white-space:nowrap">
+        ${principal ? `<a href="${esc(rastrear(principal.url))}"
+          style="color:${AZUL};text-decoration:none;font:600 13px/1
+          -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">ver</a>` : ""}
+      </td></tr>`;
+  };
+
+  const maisCaro = direto.preco - escolhido.preco;
+  const menosTempo = difTempo(escolhido.duracao_min, direto.duracao_min);
+  const veredito = maisCaro > 0
+    ? `O direto custa ${brl(maisCaro)} a mais e economiza ${menosTempo} de viagem.`
+    : `O direto custa o mesmo ou menos e ainda economiza ${menosTempo}.`;
+
+  return `
+<tr><td style="padding:16px 28px 0">
+  <div style="font:600 12px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+    color:${SUAVE};letter-spacing:.09em;text-transform:uppercase;margin-bottom:4px">Suas duas opcoes</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+    ${linha("mais barato", escolhido, true)}
+    <tr><td colspan="2" style="border-top:1px solid ${BORDA};font-size:0;line-height:0">&nbsp;</td></tr>
+    ${linha("direto mais barato", direto, false)}
+  </table>
+  <div style="font:400 13px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+    color:${TINTA};background:${VERDE_FUNDO};border-radius:7px;padding:10px 13px;margin-top:10px">
+    ${veredito}</div>
+</td></tr>`;
+}
+
 /** As armadilhas que o preco esconde. Regras vindas de casos reais:
  *  escala que dobra o tempo de viagem, e pouso no dia seguinte. */
 export function montarAvisos(escolhido, alternativas = []) {
@@ -298,8 +364,8 @@ export function previaRelatorio(a, atual, minimo) {
 
 /** Alerta imediato: o preco caiu agora, nao espera o relatorio. */
 export function montarAlerta({ assinatura, atual, anterior, motivos, avisos = [],
-                               leituras = [], urlAssinatura, urlPainel, urlDesativar,
-                               pixel = null, rastrear = (u) => u }) {
+                               leituras = [], alternativas = [], urlAssinatura, urlPainel,
+                               urlDesativar, pixel = null, rastrear = (u) => u }) {
   const pct = anterior && anterior > 0 ? ((anterior - atual.preco) / anterior) * 100 : null;
   const datas = `${dataBR(assinatura.ida)}${assinatura.volta ? " a " + dataBR(assinatura.volta) : ""}`;
 
@@ -317,6 +383,7 @@ export function montarAlerta({ assinatura, atual, anterior, motivos, avisos = []
        ${botoesCompra(assinatura, atual, rastrear)}
        ${notaTrecho(assinatura, atual)}
      `)}
+     ${comparativo(assinatura, atual, alternativas, rastrear)}
      ${historico(leituras)}
      <tr><td style="padding:18px 28px 0">
        <div style="font:600 12px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
@@ -337,8 +404,8 @@ export function montarAlerta({ assinatura, atual, anterior, motivos, avisos = []
 
 /** Relatorio periodico: o panorama, tenha caido ou nao. */
 export function montarRelatorio({ assinatura, atual, minimo, anterior, amostras, avisos = [],
-                                  leituras = [], urlAssinatura, urlPainel, urlDesativar,
-                                  pixel = null, rastrear = (u) => u }) {
+                                  leituras = [], alternativas = [], urlAssinatura, urlPainel,
+                                  urlDesativar, pixel = null, rastrear = (u) => u }) {
   const datas = `${dataBR(assinatura.ida)}${assinatura.volta ? " a " + dataBR(assinatura.volta) : ""}`;
   const titulo = `${esc(assinatura.origem)} para ${esc(assinatura.destino)}`;
 
@@ -388,6 +455,7 @@ export function montarRelatorio({ assinatura, atual, minimo, anterior, amostras,
        ${botoesCompra(assinatura, atual, rastrear)}
        ${notaTrecho(assinatura, atual)}
      `)}
+     ${comparativo(assinatura, atual, alternativas, rastrear)}
      ${historico(leituras)}
      <tr><td style="padding:16px 28px 26px">
        <div style="font:400 13px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:${SUAVE}">

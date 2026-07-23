@@ -6,8 +6,8 @@
 
 import { ehAdmin, entrarAdmin, painelAdmin, sairAdmin, telaLogin } from "./admin.js";
 import {
-  assuntoAlerta, assuntoRelatorio, enviarEmail, montarAlerta, montarAvisos,
-  montarBoasVindas, montarPainel, montarRelatorio,
+  assuntoAlerta, assuntoRelatorio, enviarEmail, melhorDireto, montarAlerta,
+  montarAvisos, montarBoasVindas, montarPainel, montarRelatorio,
 } from "./email.js";
 import { linksCompra } from "./links.js";
 import { JS_AEROPORTOS, brl, dataBR, esc, pagina, paginaMensagem, respostaHTML } from "./ui.js";
@@ -169,6 +169,50 @@ function botoesSite(a) {
       style="font-size:13px">${esc(secundario.rotulo)}</a></p>` : ""}`;
 }
 
+/** Mais barato contra melhor direto, na propria pagina. Mesma razao do e-mail:
+ *  o mais barato nem sempre e o que a pessoa compraria. */
+function comparativoSite(a) {
+  const escolhido = a.ultimo_voo;
+  if (!escolhido?.paradas) return "";
+  const direto = melhorDireto(a.alternativas || []);
+  if (!direto || direto.preco === escolhido.preco) return "";
+
+  const dur = (m) => {
+    if (!m) return "-";
+    const h = Math.floor(m / 60);
+    return h ? `${h}h${String(m % 60).padStart(2, "0")}` : `${m}min`;
+  };
+  const bloco = (rotulo, v, cor) => {
+    const { principal } = linksCompra(a, v);
+    return `<div style="flex:1;min-width:150px">
+      <div class="meta" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+        font-weight:600;color:${cor}">${rotulo}</div>
+      <div style="font-size:21px;font-weight:680;letter-spacing:-.01em;margin-top:3px">${brl(v.preco)}</div>
+      <div class="meta" style="font-size:12px;margin-top:2px">${dur(v.duracao_min)} ·
+        ${v.paradas ? `${v.paradas} parada${v.paradas > 1 ? "s" : ""}` : "direto"}${v.cia ? ` · ${esc(v.cia)}` : ""}
+        ${v.partida ? `<br>sai ${esc(v.partida)}` : ""}</div>
+      ${principal ? `<div style="margin-top:7px"><a href="${esc(principal.url)}"
+        style="font-size:13px;font-weight:600">ver</a></div>` : ""}
+    </div>`;
+  };
+  const dif = direto.preco - escolhido.preco;
+  const mm = Math.abs((escolhido.duracao_min || 0) - (direto.duracao_min || 0));
+  const tempo = Math.floor(mm / 60) ? `${Math.floor(mm / 60)}h${String(mm % 60).padStart(2, "0")}` : `${mm}min`;
+
+  return `<div class="cartao" style="margin-top:12px">
+    <div class="meta" style="text-transform:uppercase;letter-spacing:.07em;font-size:11px;
+      font-weight:600;margin-bottom:12px">Suas duas opcoes</div>
+    <div style="display:flex;gap:20px;flex-wrap:wrap">
+      ${bloco("mais barato", escolhido, "var(--ok)")}
+      ${bloco("direto mais barato", direto, "var(--suave)")}
+    </div>
+    <div style="margin-top:14px;padding:10px 13px;background:var(--ok-bg);border-radius:7px;
+      font-size:13px;line-height:1.5">${dif > 0
+        ? `O direto custa ${brl(dif)} a mais e economiza ${tempo} de viagem.`
+        : `O direto custa o mesmo ou menos e ainda economiza ${tempo}.`}</div>
+  </div>`;
+}
+
 /** Historico das ultimas leituras. Pequeno de proposito: o destaque
  *  continua sendo o preco atual, isto e so contexto. */
 function graficoHistorico(leituras = []) {
@@ -233,6 +277,7 @@ function paginaAssinatura(a, url, novo = false, salvo = false) {
          No site da LATAM o valor aparece <strong>por trecho</strong>. O total de ida e volta
          e aproximadamente o dobro do que aparece na primeira tela.</div>` : ""}
      </div>
+     ${comparativoSite(a)}
      ${graficoHistorico(a.leituras)}` : `
      <div class="cartao" style="margin-top:24px"><div class="meta">
        Ainda sem leitura. A primeira coleta acontece nos proximos minutos.</div></div>`}
@@ -518,6 +563,11 @@ async function carregarAssinatura(env, id) {
     minimo: agg?.minimo ?? null,
     amostras: agg?.n ?? 0,
     leituras: await ultimasLeituras(env, id),
+    alternativas: (await env.DB.prepare(
+      `SELECT preco,paradas,duracao_min,cia,partida,link FROM observacoes
+       WHERE assinatura_id = ?
+       AND coletado_em = (SELECT MAX(coletado_em) FROM observacoes WHERE assinatura_id = ?)`
+    ).bind(id, id).all()).results || [],
   };
 }
 
@@ -652,6 +702,7 @@ async function avaliarAlertas(env, obs, antes, origem) {
           // as outras opcoes da mesma coleta viram a base da comparacao
           // "este tem escala e leva o dobro do tempo do direto"
           avisos: montarAvisos(melhor, novas),
+          alternativas: novas,
           leituras: await ultimasLeituras(env, a.id),
           urlAssinatura: `${origem}/a/${a.id}`,
           urlPainel: `${origem}/painel`,
@@ -691,7 +742,9 @@ async function enviarRelatorios(env, origem) {
     // demais opcoes da mesma leitura, para comparar escala contra direto
     const { results: irmas } = atual
       ? await env.DB.prepare(
-          `SELECT preco,paradas,duracao_min FROM observacoes WHERE assinatura_id = ?
+          // campos completos: o comparativo precisa montar link e descrever o voo
+          `SELECT preco,paradas,duracao_min,cia,partida,chegada,link
+           FROM observacoes WHERE assinatura_id = ?
            AND coletado_em = (SELECT MAX(coletado_em) FROM observacoes WHERE assinatura_id = ?)`
         ).bind(a.id, a.id).all()
       : { results: [] };
@@ -722,6 +775,7 @@ async function enviarRelatorios(env, origem) {
           anterior: antes?.preco ?? null,
           amostras: resumo?.n ?? 0,
           avisos: montarAvisos(atual, irmas || []),
+          alternativas: irmas || [],
           leituras: await ultimasLeituras(env, a.id),
           urlAssinatura: `${origem}/a/${a.id}`,
           urlPainel: `${origem}/painel`,
