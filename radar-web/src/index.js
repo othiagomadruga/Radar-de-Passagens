@@ -10,7 +10,7 @@ import {
   montarBoasVindas, montarPainel, montarRelatorio,
 } from "./email.js";
 import { linksCompra } from "./links.js";
-import { brl, dataBR, esc, pagina, paginaMensagem, respostaHTML } from "./ui.js";
+import { JS_AEROPORTOS, brl, dataBR, esc, pagina, paginaMensagem, respostaHTML } from "./ui.js";
 
 const PERIODICIDADES = {
   diario: { horas: 24, texto: "diario" },
@@ -84,13 +84,13 @@ function campoRota(d = {}, comEmail = true) {
       placeholder="voce@exemplo.com">
     <div class="dica">E para onde vai o relatorio e o link de edicao.</div></div>` : ""}
   <div class="linha">
-    <div class="campo"><label for="origem">Origem</label>
-      <input id="origem" name="origem" required maxlength="3" value="${esc(d.origem || "")}"
-        placeholder="GRU" style="text-transform:uppercase">
-      <div class="dica">Codigo do aeroporto, 3 letras.</div></div>
-    <div class="campo"><label for="destino">Destino</label>
-      <input id="destino" name="destino" required maxlength="3" value="${esc(d.destino || "")}"
-        placeholder="LIS" style="text-transform:uppercase"></div>
+    <div class="campo"><label for="origem_busca">Saindo de</label>
+      <input id="origem_busca" autocomplete="off" placeholder="cidade ou aeroporto">
+      <input type="hidden" id="origem" name="origem" value="${esc(d.origem || "")}">
+      <div class="dica">Digite a cidade, por exemplo Sao Paulo, e escolha o aeroporto.</div></div>
+    <div class="campo"><label for="destino_busca">Indo para</label>
+      <input id="destino_busca" autocomplete="off" placeholder="cidade ou aeroporto">
+      <input type="hidden" id="destino" name="destino" value="${esc(d.destino || "")}"></div>
   </div>
   <div class="linha">
     <div class="campo"><label for="ida">Ida</label>
@@ -139,7 +139,8 @@ function paginaInicial(erros = [], d = {}) {
          <div class="dica">O cadastro e restrito a quem recebeu o codigo.</div></div>
        <button type="submit">Comecar a monitorar</button>
      </form>
-     <p style="margin-top:26px"><a href="/painel">Ja tenho cadastro, quero meus links</a></p>`
+     <p style="margin-top:26px"><a href="/painel">Ja tenho cadastro, quero meus links</a></p>`,
+    JS_AEROPORTOS
   );
 }
 
@@ -248,7 +249,8 @@ function paginaAssinatura(a, url, novo = false, salvo = false) {
        <button type="submit" name="acao" value="cancelar" class="secundario"
          onclick="return confirm('Cancelar esta assinatura e apagar o historico? Nao da para desfazer.')">
          Cancelar assinatura e apagar meus dados</button>
-     </form>`
+     </form>`,
+    JS_AEROPORTOS
   );
 }
 
