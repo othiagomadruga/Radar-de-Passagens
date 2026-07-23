@@ -9,11 +9,12 @@ compatibility_date = "2026-07-01"
 crons = ["7 * * * *"]
 
 [[d1_databases]]
+# O binding e "DB" (nome usado no codigo como env.DB), nao "radar".
+# O snippet que o `wrangler d1 create` imprime sugere o nome do banco como
+# binding; trocar isso quebraria todas as consultas.
 binding = "DB"
 database_name = "radar"
-# Substituir pelo id que o comando `wrangler d1 create radar` devolve.
-# Para `wrangler dev` local qualquer uuid serve, o banco fica em .wrangler/state.
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "b0b80956-d900-47e2-9e41-485fd827b49c"
 
 [vars]
 REMETENTE_NOME = "Radar de Passagens"
