@@ -22,7 +22,7 @@ SITE_NOME = "Radar de Passagens"
 # Monta os links dentro dos e-mails (comprar, editar, cancelar). Precisa ser o
 # endereco publico: com localhost aqui, nenhum botao funcionaria para quem
 # recebe. Trocar aqui e republicar se um dia entrar um dominio proprio.
-SITE_URL = "https://radar-passagens.thiagogodoymadruga.workers.dev"
+SITE_URL = "https://radar-passagens.madruga.workers.dev"
 
 # Segredos (nunca no arquivo, cadastrar com wrangler secret put):
 #   BREVO_API_KEY     chave da API do Brevo
