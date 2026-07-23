@@ -217,10 +217,18 @@ function paginaAssinatura(a, url, novo = false, salvo = false) {
      <div class="cartao" style="margin-top:24px">
        <div class="meta">melhor preco na ultima leitura</div>
        <div class="preco">${brl(a.ultimo_preco)}</div>
-       <div class="meta">${detalheVoo(a.ultimo_voo)}</div>
+       <div class="meta">${a.volta ? "total ida e volta" : "somente ida"}, 1 adulto${
+         a.ultimo_voo?.coletado_em
+           ? ` · verificado em ${dataBR(a.ultimo_voo.coletado_em)} as ${String(a.ultimo_voo.coletado_em).slice(11, 16)}`
+           : ""}</div>
+       <div class="meta" style="margin-top:6px">${detalheVoo(a.ultimo_voo)}</div>
        <div class="meta" style="margin-top:6px">menor preco ja visto: ${brl(a.minimo)}
        · ${a.amostras} leitura(s)</div>
        ${botoesSite(a)}
+       ${a.volta && String(a.ultima_cia || "").toLowerCase().includes("latam") ? `
+       <div class="meta" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--borda)">
+         No site da LATAM o valor aparece <strong>por trecho</strong>. O total de ida e volta
+         e aproximadamente o dobro do que aparece na primeira tela.</div>` : ""}
      </div>
      ${graficoHistorico(a.leituras)}` : `
      <div class="cartao" style="margin-top:24px"><div class="meta">
@@ -409,7 +417,7 @@ async function carregarAssinatura(env, id) {
   const a = await env.DB.prepare("SELECT * FROM assinaturas WHERE id = ?").bind(id).first();
   if (!a) return null;
   const ult = await env.DB.prepare(
-    `SELECT preco, cia, link, partida, chegada, duracao_min, chega_outro_dia
+    `SELECT preco, cia, link, partida, chegada, duracao_min, chega_outro_dia, coletado_em
      FROM observacoes WHERE assinatura_id = ?
      ORDER BY coletado_em DESC, preco ASC LIMIT 1`
   ).bind(id).first();
@@ -587,7 +595,7 @@ async function enviarRelatorios(env, origem) {
 
     const corte = (desde || new Date(a.criada_em)).toISOString();
     const atual = await env.DB.prepare(
-      `SELECT preco,cia,paradas,link,partida,chegada,duracao_min,chega_outro_dia
+      `SELECT preco,cia,paradas,link,partida,chegada,duracao_min,chega_outro_dia,coletado_em
        FROM observacoes WHERE assinatura_id = ?
        ORDER BY coletado_em DESC, preco ASC LIMIT 1`
     ).bind(a.id).first();

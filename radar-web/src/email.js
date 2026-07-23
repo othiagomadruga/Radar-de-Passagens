@@ -159,6 +159,33 @@ const duracaoTexto = (min) => {
   return h ? `${h}h${String(m).padStart(2, "0")}` : `${m}min`;
 };
 
+/** O que o numero representa e quando foi lido.
+ *
+ *  Sem isso a pessoa clica, ve outro valor no site da companhia e acha que o
+ *  sistema mentiu. Dois motivos reais para a diferenca:
+ *  a LATAM exibe o preco POR TRECHO numa busca de ida e volta (metade do que
+ *  mostramos), e o preco muda entre a leitura e o clique. */
+function selo(assinatura, v, coletadoEm) {
+  const escopo = assinatura.volta
+    ? "total ida e volta, 1 adulto"
+    : "somente ida, 1 adulto";
+  const quando = coletadoEm
+    ? `verificado em ${dataBR(coletadoEm)} as ${String(coletadoEm).slice(11, 16)}`
+    : null;
+  return `<div style="font:400 12px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+    color:${SUAVE};margin-top:6px">${escopo}${quando ? ` &nbsp;·&nbsp; ${quando}` : ""}</div>`;
+}
+
+/** Aviso especifico de quando a companhia exibe o valor por trecho. */
+function notaTrecho(assinatura, v) {
+  const cia = String(v?.cia || "").toLowerCase();
+  if (!assinatura.volta || !cia.includes("latam")) return "";
+  return `<div style="font:400 12px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+    color:${SUAVE};margin-top:10px;padding-top:10px;border-top:1px solid ${BORDA}">
+    No site da LATAM o valor aparece <strong>por trecho</strong>. O total de ida e volta
+    e aproximadamente o dobro do que voce vera na primeira tela.</div>`;
+}
+
 /** Linha do voo: horario, duracao, paradas. Sem isso o preco sozinho engana. */
 function linhaVoo(v) {
   if (!v) return "";
@@ -223,8 +250,10 @@ export function montarAlerta({ assinatura, atual, anterior, motivos, avisos = []
          <span style="display:inline-block;background:${VERDE_FUNDO};color:${VERDE};font:600 13px/1
          -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;padding:6px 11px;border-radius:20px">
          ${pct && pct > 0 ? `queda de ${pct.toFixed(0)}%` : "novo preco"} · antes ${brl(anterior)}</span></div>` : ""}
+       ${selo(assinatura, atual, atual.coletado_em)}
        ${linhaVoo(atual)}
        ${botoesCompra(assinatura, atual)}
+       ${notaTrecho(assinatura, atual)}
      `)}
      ${historico(leituras)}
      <tr><td style="padding:18px 28px 0">
@@ -289,8 +318,10 @@ export function montarRelatorio({ assinatura, atual, minimo, anterior, amostras,
        <div style="font:700 34px/1.1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
          color:${TINTA};margin-top:4px">${brl(atual.preco)}</div>
        ${variacao}
+       ${selo(assinatura, atual, atual.coletado_em)}
        ${linhaVoo(atual)}
        ${botoesCompra(assinatura, atual)}
+       ${notaTrecho(assinatura, atual)}
      `)}
      ${historico(leituras)}
      <tr><td style="padding:16px 28px 26px">
