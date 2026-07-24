@@ -1,9 +1,14 @@
 {
-  "alertas": {},
+  "alertas": {
+    "gru-lis-out26": {
+      "em": "2026-07-24T13:34:40-03:00",
+      "preco": 5032.0
+    }
+  },
   "saude": {
     "gru-lis-out26:google": {
       "falhas": 0,
-      "ultimo_ok": "2026-07-24T11:49:01-03:00"
+      "ultimo_ok": "2026-07-24T13:34:40-03:00"
     }
   }
 }
