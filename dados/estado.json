@@ -7,9 +7,8 @@
   },
   "saude": {
     "gru-lis-out26:google": {
-      "falhas": 1,
-      "ultimo_erro": "FlightsNotFound: no flights found; received error",
-      "ultimo_ok": "2026-07-25T18:37:08-03:00"
+      "falhas": 0,
+      "ultimo_ok": "2026-07-25T20:42:02-03:00"
     }
   }
 }
